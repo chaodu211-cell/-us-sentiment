@@ -130,7 +130,89 @@ def t_alert_exclusive():
     chk("实心蓝点与空心蓝点互斥", not (al["cold"] & al["cold_soft"]).any())
 
 
-for f in (t_repricing, t_bear, t_alert_exclusive):
+# ---- 新增：减仓温度（SELL_W 加权合成）----
+def t_compose_sell():
+    import pandas as pd, numpy as np, engine as E
+    idx = pd.bdate_range("2020-01-01", periods=200)
+    adj = pd.DataFrame({c: pd.Series(np.linspace(10, 90, 200), index=idx) for c in E.ORDER})
+    raw = pd.DataFrame({"_narrow_neutral": pd.Series(np.linspace(90, 10, 200), index=idx)})
+    t = E.compose_sell(adj, raw)
+    # 手算：只有 SELL_W 里的项参与，权重归一
+    w = E.SELL_W; tot = sum(w.values())
+    man = sum((raw["_narrow_neutral"] if k == "narrow" else adj[k]) * v for k, v in w.items()) / tot
+    chk("减仓温度=SELL_W 加权平均", np.allclose(t.dropna(), man.dropna()))
+    chk("减仓温度不含 ERP 与上涨占比",
+        "erp" not in E.SELL_W and "advancing" not in E.SELL_W, str(sorted(E.SELL_W)))
+    chk("减仓温度落在 0-100", float(t.min()) >= 0 and float(t.max()) <= 100,
+        f"[{t.min():.1f},{t.max():.1f}]")
+    # 任一分项缺失 -> 当日不出温度（与综合温度同一约定）
+    adj2 = adj.copy(); adj2.loc[adj2.index[-1], "top2"] = np.nan
+    chk("末日分项缺失 -> 减仓温度为空", np.isnan(E.compose_sell(adj2, raw).iloc[-1]))
+    raw2 = raw.copy(); raw2.loc[raw2.index[-1], "_narrow_neutral"] = np.nan
+    chk("末日窄幅缺失 -> 减仓温度为空", np.isnan(E.compose_sell(adj, raw2).iloc[-1]))
+    chk("拿不到窄幅评分时返回 None", E.compose_sell(adj, pd.DataFrame(index=idx)) is None)
+    # 无前视：改动第 i 天之后的值，不能影响第 i 天的读数
+    adj3 = adj.copy(); adj3.iloc[120:] = 5.0
+    chk("减仓温度无前视", np.allclose(E.compose_sell(adj3, raw).iloc[:120].dropna(),
+                                      t.iloc[:120].dropna()))
+
+
+def t_narrow_neutral():
+    """_narrow_neutral 的两层 where：下跌市填 50，历史不足保留 NaN。"""
+    import pandas as pd, numpy as np
+    idx = pd.bdate_range("2020-01-01", periods=10)
+    sc = pd.Series([np.nan, np.nan, 70.0, 80.0, 90.0, 60.0, 55.0, 40.0, 30.0, 20.0], index=idx)
+    up = pd.Series([True] * 5 + [False] * 5, index=idx)     # 后半段为下跌市
+    out = sc.where(up, 50.0).where(sc.notna())              # 与 engine 中同一行表达式
+    chk("窄幅中性版：历史不足处仍为 NaN", bool(out.iloc[:2].isna().all()))
+    chk("窄幅中性版：上涨市保留原值", np.allclose(out.iloc[2:5], sc.iloc[2:5]))
+    chk("窄幅中性版：下跌市填 50", np.allclose(out.iloc[5:], 50.0))
+
+
+def t_alert_wiring():
+    """红点走减仓温度、蓝点走 COLD_TH、黑框走 CROWD_* —— 阈值确实被接上了。"""
+    import pandas as pd, numpy as np, engine as E
+    n = 60
+    idx = pd.bdate_range("2021-01-01", periods=n)
+    calm = pd.Series(50.0, index=idx)
+    px = pd.Series(np.linspace(100, 160, n), index=idx)     # 上涨，排除熊市反弹干扰
+    # 红点：主温度压在 50（远低于 BANDS[3]），只有减仓温度越过 SELL_TH
+    ts = pd.Series(E.SELL_TH + 5, index=idx)
+    al = E.build_alerts(calm, pd.DataFrame(index=idx), ndx=px, temp_sell=ts)
+    chk("红点由减仓温度触发（主温度仅50）", bool(al["hot"].iloc[E.PERSIST:].all()))
+    ts2 = pd.Series(E.SELL_TH - 5, index=idx)
+    al2 = E.build_alerts(calm, pd.DataFrame(index=idx), ndx=px, temp_sell=ts2)
+    chk("减仓温度低于门槛则不触发红点", not al2["hot"].any())
+    # 退回旧行为：不给减仓温度时，红点看主温度 > BANDS[3]
+    hot_old = E.build_alerts(pd.Series(E.BANDS[3] + 5, index=idx), pd.DataFrame(index=idx), ndx=px)
+    chk("未提供减仓温度时退回主温度口径", bool(hot_old["hot"].iloc[E.PERSIST:].all()))
+    # 蓝点：快温度落在 COLD_TH 两侧
+    vix = pd.Series(float(E.VIX_COLD), index=idx)
+    hit = E.build_alerts(calm, pd.DataFrame(index=idx), vix=vix,
+                         temp_fast=pd.Series(E.COLD_TH - 1, index=idx), ndx=px)
+    miss = E.build_alerts(calm, pd.DataFrame(index=idx), vix=vix,
+                          temp_fast=pd.Series(E.COLD_TH + 1, index=idx), ndx=px)
+    chk("蓝点门槛用 COLD_TH（低于则触发）", bool(hit["cold"].any()))
+    chk("蓝点门槛用 COLD_TH（高于则不触发）", not miss["cold"].any())
+    chk("VIX 差一点就不触发蓝点",
+        not E.build_alerts(calm, pd.DataFrame(index=idx), vix=pd.Series(E.VIX_COLD - 0.1, index=idx),
+                           temp_fast=pd.Series(E.COLD_TH - 1, index=idx), ndx=px)["cold"].any())
+    # 黑框：分位刚好跨过 CROWD_TOP2 / CROWD_LEV
+    cp = pd.DataFrame({"top2": pd.Series(E.CROWD_TOP2 + 1, index=idx),
+                       "leverage": pd.Series(E.CROWD_LEV + 1, index=idx)})
+    cp_lo = pd.DataFrame({"top2": pd.Series(E.CROWD_TOP2 - 1, index=idx),
+                          "leverage": pd.Series(E.CROWD_LEV + 1, index=idx)})
+    chk("黑框门槛用 CROWD_TOP2/CROWD_LEV（越过则触发）",
+        bool(E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp, ndx=px)["crowd"]
+             .iloc[E.PERSIST:].all()))
+    chk("黑框：抱团分位不够则不触发",
+        not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp_lo, ndx=px)["crowd"].any())
+    # 确认天数：第 PERSIST 天才置位，之前为假（无前视）
+    chk(f"红点需连续 {E.PERSIST} 日才置位",
+        (not al["hot"].iloc[:E.PERSIST - 1].any()) and bool(al["hot"].iloc[E.PERSIST - 1]))
+
+
+for f in (t_repricing, t_bear, t_alert_exclusive, t_compose_sell, t_narrow_neutral, t_alert_wiring):
     f()
 print("\n新增用例全部通过" if ok else "\n新增用例有失败")
 
