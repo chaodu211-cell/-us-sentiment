@@ -16,10 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 不开 cache: pip —— 它需要 requirements.txt / pyproject.toml 来算缓存 key，
+      # 本仓库刻意没有依赖清单文件（依赖就三个，写在 README 第一节），
+      # 开了缓存会直接报 "No file matched to [**/requirements.txt or **/pyproject.toml]"
+      # 并让整个作业在装依赖之前就失败。省那十几秒不值得多维护一份会漂移的清单。
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       # 与 README 第一节保持一致：整条流水线只依赖这三个包
       - name: 装依赖
