@@ -94,32 +94,32 @@ Windows 用「任务计划程序」建一个每日任务，操作填 `python.exe
 
 ### 方案 B：GitHub Actions + GitHub Pages（免费、不用自己开机）
 
-把项目推到一个私有仓库，加 `.github/workflows/daily.yml`：
+**已经配好了**，就是 `.github/workflows/daily.yml`。它做四件事：
 
-```yaml
-name: daily
-on:
-  schedule: [{cron: "0 12 * * 1-5"}]   # UTC 12:00 = 美东早8点（夏令时）
-  workflow_dispatch:
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
-      - run: pip install pandas numpy scipy
-      - run: python3 daily_refresh.py
-      - run: |
-          git config user.name  github-actions
-          git config user.email github-actions@github.com
-          git add -A && git commit -m "daily $(date -u +%F)" || exit 0
-          git push
-```
+1. 取回缓存的 `raw/` → 跑 `daily_refresh.py --fast` → 重算温度 → 渲染 `dashboard.html`
+2. 把 `data.json` / `dashboard.html` / `_pipeline_state.json` 提交回仓库
+3. 把 `dashboard.html` 作为 `index.html` 发布到 GitHub Pages
+4. 在 Actions 的运行摘要里贴出日志尾部（含 `NEWLY_TRIGGERED` 那一行）
 
-再在仓库设置里开启 GitHub Pages（指向根目录），`dashboard.html` 就有了一个固定网址。
-免费额度对这个用量绰绰有余。**注意** `raw/` 有43MB，要么提交进仓库（可以，GitHub 单仓库
-限制远大于此），要么在 workflow 里加 `actions/cache` 缓存它。
+三种触发方式：**工作日 12:00 UTC**（美东早8点/冬令时早7点）、**每次 push 到 main**
+（改完引擎不用手动跑任何东西，页面自动重建）、以及手动触发（可勾选「全量重下十年历史」）。
+
+**首次启用需要点一下**：仓库 Settings → Pages → Source 选 **GitHub Actions**。
+只有这一步必须在网页上做，之后再也不用管。
+
+几个容易踩的坑，都已经在 workflow 里处理掉了，改动时别踩回去：
+
+| 坑 | 处理 |
+|---|---|
+| `raw/` 43MB、每天重写全部 CSV，提交进 git 会让历史无限膨胀 | 用 `actions/cache`，不进 git |
+| `actions/cache` 的 key 不可变，固定 key 会让缓存永远停在第一天 | key 带 `run_id` 轮换 + `restore-keys` 前缀回退 |
+| `setup-python` 的 `cache: pip` 需要 `requirements.txt`，本仓库没有 | 不开 pip 缓存（依赖就三个，装起来很快） |
+| `_pipeline_state.json` 在仓库根目录而非 `raw/` 里，不持久化会导致每次都误判成「新交易日」并重复报警 | 提交回仓库 |
+| 抓取失败会让整页变陈 | 抓取步骤 `continue-on-error`，失败时退回用缓存的 `raw/` 重新渲染，并在摘要里显式告警 |
+| `grep ... \| tail -1` 的退出码来自 `tail`（恒为 0），`\|\| 默认值` 永不触发 | 显式判空 |
+
+**已知风险**：`stockanalysis.com` 会不会屏蔽 Actions 的出口 IP（Azure 网段）尚未验证过。
+真被挡了，退路是仓库里留着的 `fetch_sp500_yahoo.py`，或改用 Stooq / FRED（见第三节）。
 
 ### 邮件/推送提醒
 

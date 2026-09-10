@@ -1,0 +1,156 @@
+name: daily
+
+# 每日刷新行情 → 重算温度 → 渲染 dashboard.html → 发布到 GitHub Pages。
+# 配好之后本地不需要再做任何事：合并代码会重建页面，工作日早上会自动更新行情。
+#
+# raw/ 十年原始数据（约43MB / 540个CSV）不进 git —— 每天刷新都会重写这些文件，
+# 提交进去会让仓库历史无限膨胀且无法回收。改用 actions/cache 缓存。
+on:
+  # 12:00 UTC = 美东早8点（夏令时）/ 早7点（冬令时），前一交易日收盘数据此时已可取
+  schedule:
+    - cron: "0 12 * * 1-5"
+  # 代码一合进 main 就重建页面，这样改完引擎不用手动跑任何东西
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "全量重下十年历史（平时不需要；怀疑数据有问题时才勾）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # 把 data.json / dashboard.html 提交回仓库
+  pages: write      # 发布到 Pages
+  id-token: write   # deploy-pages 需要
+
+# 不要让定时任务和 push 触发的任务同时改仓库
+concurrency:
+  group: daily
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不开 cache: pip —— 本仓库刻意没有 requirements.txt / pyproject.toml，
+      # 开了会直接报 "No file matched to [**/requirements.txt ...]" 并让作业失败。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 装依赖
+        run: pip install pandas numpy scipy
+
+      # 缓存 key 必须每次轮换：actions/cache 的 key 是不可变的，用固定 key 会导致
+      # 缓存永远停在第一天、增量再也存不回去。用 run_id 做后缀每次存新的，
+      # restore-keys 前缀回退到最近一次。旧缓存由 GitHub 按 LRU 自动清理。
+      - name: 取回 raw/ 缓存
+        uses: actions/cache@v4
+        with:
+          path: raw
+          key: raw-${{ github.run_id }}
+          restore-keys: |
+            raw-
+
+      - name: 刷新数据并渲染
+        id: pipeline
+        continue-on-error: true    # 抓取失败不直接判死，下一步会用缓存数据兜底
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.full }}" = "true" ]; then MODE=""; else MODE="--fast"; fi
+          python3 daily_refresh.py $MODE 2>&1 | tee run.log
+
+      # 抓取失败时的兜底：用缓存里已有的 raw/ 重算并重新渲染，
+      # 至少让页面反映最新代码，而不是整页变陈。engine.py 自带数据完整性闸门
+      # （complete_through），输入不齐的最新交易日会被自动截掉，不会产出半成品读数。
+      - name: 抓取失败 — 用缓存数据兜底重建
+        if: steps.pipeline.outcome == 'failure'
+        run: |
+          echo "::warning::数据抓取失败，改用缓存的 raw/ 重新渲染。页面代码是最新的，但行情可能不是。"
+          if [ -z "$(ls -A raw 2>/dev/null)" ]; then
+            echo "::error::raw/ 缓存也是空的，无法渲染任何页面"
+            exit 1
+          fi
+          python3 engine.py 2>&1 | tee -a run.log
+          python3 build.py  2>&1 | tee -a run.log
+
+      - name: 校验产物
+        run: |
+          python3 - <<'PY'
+          import io, json, sys
+          json.loads(io.open("data.json", encoding="utf-8").read())      # 合法 JSON
+          s = io.open("dashboard.html", encoding="utf-8").read()
+          if "__DATA__" in s:
+              sys.exit("dashboard.html 里 __DATA__ 占位符没被替换")
+          if len(s) < 100_000:
+              sys.exit(f"dashboard.html 只有 {len(s)} 字节，疑似渲染失败")
+          d = json.loads(io.open("data.json", encoding="utf-8").read())
+          print(f"截至 {d['as_of']}  综合温度 {d['temperature']}  减仓温度 {d.get('temperature_sell')}")
+          PY
+
+      # _pipeline_state.json 记录上次处理到哪个交易日，NEWLY_TRIGGERED 的判定靠它。
+      # 它在仓库根目录（不在 raw/ 里，不受缓存覆盖），必须提交才能跨运行保持，
+      # 否则每次运行都会被当成「新交易日」而重复报警。
+      - name: 提交结果
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data.json dashboard.html
+          # 兜底路径（只跑了 engine+build）不会生成这个文件。这里必须用 if 而不是
+          # `[ -f x ] && git add x` —— 后者在文件不存在时整条 AND 列表返回 1，
+          # GitHub 的 `bash -e` 会据此判定整步失败。
+          if [ -f _pipeline_state.json ]; then git add _pipeline_state.json; fi
+          if git diff --cached --quiet; then
+            echo "产物无变化，跳过提交"
+            exit 0
+          fi
+          # 注意 `grep ... | tail -1` 的退出码来自 tail（恒为 0），所以 `|| echo 默认值`
+          # 永远不会触发，日志里没有这一行时会静默得到空串。必须显式判空。
+          ALERTS=""
+          if [ -s run.log ]; then
+            ALERTS=$(grep -o 'NEWLY_TRIGGERED:[a-z_,]*' run.log | tail -1 || true)
+          fi
+          if [ -z "$ALERTS" ]; then ALERTS="NEWLY_TRIGGERED:unknown"; fi
+          git commit -m "daily $(date -u +%F) · $ALERTS"
+          # 定时任务与 push 可能挨得很近，先 rebase 再推，避免非快进被拒
+          for i in 1 2 3; do
+            git pull --rebase --quiet origin main && git push && break
+            echo "推送失败，重试 $i"; sleep $((i * 3))
+          done
+
+      - name: 准备 Pages 目录
+        run: |
+          mkdir -p _site
+          cp dashboard.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: 运行摘要
+        if: always()
+        run: |
+          {
+            echo "## 美股情绪温度计 · 每日刷新"
+            echo
+            if [ "${{ steps.pipeline.outcome }}" = "failure" ]; then
+              echo "> ⚠️ **数据抓取失败**，页面用缓存的 raw/ 重建。行情可能不是最新的。"
+              echo
+            fi
+            echo '```'
+            tail -40 run.log 2>/dev/null || echo "（没有日志：流水线在产出任何输出之前就失败了）"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: refresh
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
