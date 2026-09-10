@@ -631,15 +631,21 @@ function segments(f){
   if (st >= 0) out.push([st, f.length-1]);
   return out;
 }
-/* 当前宏观状态：决定蓝点是实心还是空心、红点门槛是 80 还是 60 */
+/* 当前宏观状态：决定蓝点是实心还是空心，以及熊市反弹预警是否启用 */
 (() => {
   const M = D.macro, BR = D.bear, bits = [];
   if (M) bits.push(`10年期实际利率 <b>${M.real_rate == null ? "—" : M.real_rate.toFixed(2) + "%"}</b>`
     + (M.chg == null ? "" : `（6个月 ${M.chg >= 0 ? "+" : ""}${M.chg.toFixed(2)}pp）`)
     + ` · ${M.repricing ? "<b style=\"color:#D19A3E\">处于贴现率重估状态，蓝点降级为空心</b>"
                         : "不处于贴现率重估状态，蓝点按实心计"}`);
-  if (BR) bits.push(BR.now ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下，过热门槛临时降至 ${BR.th}</b>`
-                          : `纳指未跌破下行的 ${BR.ma} 日均线，过热门槛为 ${B[3]}`);
+  // 红点始终看减仓温度（与是否熊市无关）；熊市反弹预警是另一条规则，只在确认的下行趋势里启用，
+  // 它看的是页面顶部那个综合温度、门槛 BR.th。两者别混着说——这行以前写的"过热门槛为 80"
+  // 在红点改用减仓温度之后就不成立了。
+  const redTxt = D.sell_threshold == null ? `综合温度 > ${B[3]}` : `减仓温度 > ${D.sell_threshold.toFixed(0)}`;
+  if (BR) bits.push(BR.now
+    ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下，熊市反弹预警已启用：综合温度 > ${BR.th} 即预警</b>`
+      + `（红点仍看${redTxt}）`
+    : `纳指未跌破下行的 ${BR.ma} 日均线，熊市反弹预警不启用 · 红点看${redTxt}`);
   $("macrobar").innerHTML = bits.length ? "当前宏观状态：" + bits.join("　|　") : "";
 })();
 
