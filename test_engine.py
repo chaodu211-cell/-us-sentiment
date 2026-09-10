@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """独立复核：分位数、反向、等权、区间划分"""
+import sys
 import numpy as np, pandas as pd
 from scipy import stats as sps
 import engine as E
@@ -243,3 +244,9 @@ def t_merge():
 
 t_merge()
 print("\n增量用例全部通过" if ok else "\n增量用例有失败")
+
+# 退出码：任一 chk 失败即非零。CI 靠这个判定成败——
+# 没有它的话，脚本打印一堆 FAIL 仍然 exit 0，workflow 会一路绿灯放行。
+if not ok:
+    print("\n有失败项，退出码 1")
+sys.exit(0 if ok else 1)

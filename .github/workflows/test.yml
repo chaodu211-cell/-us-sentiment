@@ -1,0 +1,75 @@
+name: test
+
+# 关卡：任何进入 main 的改动都要先跑通 test_engine.py。
+# 这个仓库没有别的自动化检查，engine.py 的分位口径、无前视、预警互斥、
+# 各阈值接线全靠这一套用例兜底，所以它必须是必过项。
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # 与 README 第一节保持一致：整条流水线只依赖这三个包
+      - name: 装依赖
+        run: pip install pandas numpy scipy
+
+      # 主关卡。test_engine.py 末尾有 sys.exit(0 if ok else 1)，
+      # 任一 chk 失败即非零退出，这一步会红。不要去掉那个退出码。
+      - name: 跑 test_engine.py
+        run: python3 test_engine.py
+
+      # 冒烟：确认 data.json 合法、模板占位符被真正替换掉。
+      # build.py 自己会 json.loads(data)，非法 JSON 直接抛错。
+      - name: 冒烟 — 渲染 dashboard
+        run: |
+          python3 build.py
+          python3 - <<'PY'
+          import io, sys
+          s = io.open("dashboard.html", encoding="utf-8").read()
+          if "__DATA__" in s:
+              sys.exit("dash_tpl.html 的 __DATA__ 占位符没有被替换")
+          if len(s) < 100_000:
+              sys.exit(f"dashboard.html 只有 {len(s)} 字节，疑似注入失败")
+          print(f"dashboard.html {len(s)} 字节，占位符已替换")
+          PY
+
+      # 冒烟：engine 能干净导入，且合成相关的常量自洽。
+      # 这几条是"改参数时最容易顺手改坏"的地方，值得单独挡一道。
+      - name: 冒烟 — 引擎常量自洽
+        run: |
+          python3 - <<'PY'
+          import sys, engine as E
+          bad = []
+          if not E.SELL_W or sum(E.SELL_W.values()) <= 0:
+              bad.append("SELL_W 为空或权重和非正")
+          if not 0 < E.SELL_TH < 100:
+              bad.append(f"SELL_TH={E.SELL_TH} 不在 (0,100)")
+          if not 0 < E.COLD_TH < 100:
+              bad.append(f"COLD_TH={E.COLD_TH} 不在 (0,100)")
+          if E.COLD_TH >= E.SELL_TH:
+              bad.append(f"COLD_TH({E.COLD_TH}) 不应高于 SELL_TH({E.SELL_TH})")
+          if E.ERP_MODE not in ("erp", "blend", "ep"):
+              bad.append(f"ERP_MODE={E.ERP_MODE!r} 不是合法取值")
+          if E.BANDS != sorted(E.BANDS):
+              bad.append("BANDS 必须单调递增")
+          keys = {r["key"] for r in E.ALERTS}
+          if len(keys) != len(E.ALERTS):
+              bad.append("ALERTS 里有重复的 key")
+          if bad:
+              sys.exit("常量自检失败：\n  - " + "\n  - ".join(bad))
+          print(f"常量自检通过：ERP_MODE={E.ERP_MODE} SELL_TH={E.SELL_TH} "
+                f"COLD_TH={E.COLD_TH} VIX_COLD={E.VIX_COLD} "
+                f"黑框={E.CROWD_TOP2}/{E.CROWD_LEV} NT_TH={E.NT_TH}")
+          PY
