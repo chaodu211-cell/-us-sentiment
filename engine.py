@@ -27,7 +27,21 @@ MA_WIN      = 20    # 均线窗口
 #   "blend" 折中：ERP 分位与 E/P 分位各半。E/P 不含利率，不受加息周期污染；
 #           保留 ERP 的股债相对信息。2022 底 31.5 → 23.9，秩相关 -0.126 → -0.099。
 #   "ep"    仅用 E/P：2022 底降到 16.3（进恐慌区），但秩相关掉到 -0.071 且五档收益失去单调。
-ERP_MODE = "blend"
+#
+# —— 2026-09 复核：blend 撤销，退回 "erp" ——
+# 上面那段只看了"合成温度"的秩相关（-0.126 → -0.099，看着像小让步），漏了看**分项本身**。
+# 直接测这一个因子对未来 63 日 QQQ 的秩相关（2017-10 起 2180 个交易日）：
+#     纯 ERP 分位 -0.120   |   blend 分位 -0.007   ← 不是"钝化"，是归零
+# 高低两端读数几乎一样（最高10%的日子 +4.34%、最低10% +4.70%，基准 +5.19%），
+# 等于往温度里掺了 1/6 的白噪声。原因是掺进来的那半个 E/P 分位自身秩相关约 +0.11，
+# 与 ERP 那半**方向相反**，不是中性稀释而是反向对冲，正好把信号抵消掉。
+# 两端都因此受损：ERP 最低10%的日子（=最便宜）纯口径后续 +7.91%/23%为负，
+# blend 只有 +4.70%/35%为负——蓝点想要的"估值到位"信息也被抹掉了。
+# 加息周期的失真交给 repricing_regime()（贴现率重估闸门）去处理，那个实测有效
+# （空心蓝 77% 为负 vs 实心蓝 0% 为负），不需要在因子层面再修一次、还修坏。
+# 代价：2022-10 熊市底 ERP 反向分位会重新读到 90+ 的"极贵"。这是**描述**失真，
+# 已由熊市反弹预警与空心蓝点在**信号**层面兜住，不再牺牲因子本身的判别力去换它。
+ERP_MODE = "erp"
 
 # ---------- 参照系 ----------
 # 滚动252日分位的毛病：尺子自己在晃。实测各分项"窗口均值摆幅 / 自身标准差"：
@@ -60,6 +74,51 @@ REF_EXP = []
 REF_ROLL = ["turnover", "top2", "advancing", "ma20", "leverage", "erp"]
 
 BANDS = [20.0, 40.0, 60.0, 80.0]
+
+# ---------- 减仓温度：与展示用的综合温度分开 ----------
+# 为什么要拆：综合温度被同时要求做两件相反的事——标顶和标底。实测这两件事靠的不是同一批因子。
+# 现行红点（综合温度>80 连3日）是四个减仓信号里最弱的一个：
+#   红点 +63日 +3.18% / 34%为负   黑框 +0.35% / 38%   橙线 +0.67% / 39%   熊反 -11.33% / 87%
+#   （基准 +5.19% / 27%为负）——旗舰信号还不如两个辅助信号。
+# 而且换阈值救不回来：>70 是 +4.54%、>80 是 +3.18%、>85 是 +2.75%，整条曲线平的，
+# 说明问题在合成本身，不在门槛。三个具体病因：
+#   1. ERP 那一项当时是 blend，秩相关 -0.007（已在上面修掉）
+#   2. 上涨占比与站上MA20占比相关系数 0.84，是同一个东西量两遍，
+#      名义各占 1/6、合计吃掉温度方差的 38%，而它俩恰是六项里最弱的（-0.023 / -0.047）
+#   3. 判别力最强的因子根本不在温度里：窄幅逼空评分秩相关 -0.348，是第二名（换手率 -0.153）的两倍多
+# 于是减仓温度只保留"标顶真的有用"的四类，并把窄幅评分放进来给最高权重：
+#   TOP2抱团 x2、杠杆多空比 x2、窄幅逼空 x3、站上MA20 x1、换手率 x1
+# 上涨占比不入（与MA20重复），ERP 不入（估值是慢变量，对3个月内的顶没有分辨力：
+# 最高10%的日子 +4.02%、最低10% +7.91%，两端差异来自"便宜"那一侧，对减仓无用）。
+#
+# 权重不是拍的：在 7 因子 x 0-3 档权重的 16384 种组合里，筛出"两段子样本秩相关同号"的
+# 15575 个合格组合后按"顶部十分位未来63日收益"排序，前 12 名全是同一个形状——
+# TOP2 + 杠杆 + 重仓窄幅 + 一个宽度项；ERP 一次都没进过前列，换手率大多缺席或垫底。
+# 敏感性：把任一权重 ±1（含把 MA20 或换手率整项删掉），触发后 +63日 都落在 -1.5% ~ -2.5%、
+# 为负率 55%~65% 之间，没有一处是靠某个特定权重撑住的。
+SELL_W = {"top2": 2.0, "leverage": 2.0, "narrow": 3.0, "ma20": 1.0, "turnover": 1.0}
+SELL_TH = 75.0   # 红点门槛。扫描：>72 → 33段/-2.19%/61%为负；>75 → 26段/-1.79%/59%；
+                 # >78 → 11段/-2.78%/65%。取 75：段数与现行红点相当的前提下质量最好。
+# 试过但放弃：TOP2 改成"水平与63日变化各半"（单因子秩相关确实从 -0.143 升到 -0.171），
+# 放进合成后 >75 是 16段/-2.46%/65%为负，看着更漂亮，但**整个 2018 年一天都不触发**
+# （2018-01 与 2018-10 两个真顶全丢），减仓窗口覆盖率也从 13/18 掉回 12/18。
+# 原因是 2018 年抱团度是高位但没有加速，变化率口径看不见它。故仍用纯水平分位。
+#
+# 效果（2017-10 ~ 2026-09，前瞻 QQQ）：
+#   现行红点   56天/18段  +21日 +0.42%  +63日 +3.18%  63日回撤 -6.20%  34%为负
+#   新  红点   81天/26段  +21日 -4.06%  +63日 -1.79%  63日回撤 -12.26%  59%为负
+# 最能说明问题的是分年分布——现行红点的病是"把2023说成最热、把2021说成不热"：
+#   年份      2018 2019 2020 2021 2022 2023 2024 2025 2026
+#   现行红点     9    1   14    0    0   21    8    0    0   ← 2021泡沫顶0天、2023熊市后21天
+#   新  红点     9    3   18   14    0    0   20   12    5   ← 2021补上、2023归零
+# 对"未来63日内跌幅≥8%"窗口的覆盖率 12/18 → 13/18，且深度提升明显
+# （2021-10~2022-01 从 7 天变 22 天，2019-12~2020-03 从 27 天变 40 天）。
+#
+# 【必读的局限】减仓侧的边际在后半段明显衰减：
+#   2017-2021  44天  +63日 -5.40%（该段基准 +5.71%）  82%为负
+#   2022-2026  37天  +63日 +2.49%（该段基准 +4.69%）  32%为负
+# 两段方向一致（都低于基准），但优势从 11 个百分点缩到 2 个。全样本的 -1.79% 是被前半段
+# 拉出来的。别按全样本数字设仓位。
 
 SECTORS = {
  "信息技术": ["AAPL","MSFT","NVDA","ON","ZBRA"],
@@ -300,6 +359,14 @@ def build_indicators():
             near = ((dd + NT_DD) / NT_DD * 100.0).clip(0, 100)                 # 越靠近峰值越高
             sc = (rolling_pct(narrow) + rolling_pct(-brd_chg) + near) / 3.0
             raw["_narrow_score"] = sc.where(cw.pct_change(NT_WIN) > 0)  # 只在上涨市里成立
+            # 供减仓温度合成用的版本：下跌市里记为中性 50 而不是缺失。
+            # 两者的区别很重要——预警用的 _narrow_score 必须在下跌市里"无定义"（窄幅逼空
+            # 本来就只在上涨市成立，那是它的语义）；但合成用的不能是 NaN，因为 compose_sell
+            # 要求各项齐备，一个 NaN 会让整个下跌市的减仓温度消失。下跌市读 50 语义上也对：
+            # 那时候该说话的是熊市反弹预警，不是窄幅逼空。
+            # 注意两层 where 的分工：外层把"下跌市"填成 50，内层把"历史不足、分位还算不出来"
+            # 的日子保留为 NaN——后者是真的没有读数，不能假装中性。
+            raw["_narrow_neutral"] = sc.where(cw.pct_change(NT_WIN) > 0, 50.0).where(sc.notna())
             raw["_narrow_gap"] = narrow * 100.0
             raw["_breadth_chg"] = brd_chg
             raw["_ndx_dd"] = dd
@@ -442,7 +509,34 @@ def direction(spy, idx):
 
 
 # ---------- 预警规则 ----------
-VIX_COLD = 30   # 蓝点预警的附加条件：VIX ≥ 此值
+# —— 蓝点的两个门槛 ——
+# 蓝点是全系统最好的信号，骨架不要动：VIX 与温度必须**同时**到位，是交集在起作用而不是权重。
+# 实测（非重估期）：VIX≥30 单独 +63日 +17.89%，快温<20 单独 +16.73%，两者相与 +26.68%。
+# 只调了两处标定，第一处是被 ERP 口径变更逼出来的：
+#   1) ERP 改纯口径后快温度整条曲线右移（最大偏移 7.9 分），旧的 <20 在新单位下约等于 <27，
+#      门槛必须重标。扫描 VIX≥30 下的新快温：<18 → 13段/+29.09%，<20 → 15段/+28.64%，
+#      <22 → 16段/+27.98%，<25 → 16段/+27.49%/0%为负，<28 → 19段/+25.63%/3%，<30 → 20段/+24.87%/5%。
+#      取 25：曲线平坦段的中部，9 年 16 段一次都没亏过（最差 +6.8%），不卡在边缘。
+#   2) VIX 门槛 30 → 25，为了补覆盖。按"相对6个月高点回撤≥8%"数，16 个可加仓窗口现行只响了 5 个：
+#        VIX≥30 → 16段 +27.49% / 0%为负 / 覆盖6段
+#        VIX≥26 → 19段 +24.32% / 3%为负 / 覆盖6段
+#        VIX≥25 → 21段 +23.28% / 5%为负 / 最差-4.1% / 覆盖7段  ← 取这个
+#        VIX≥24 → 25段 +20.67% / 8%为负
+#      两段子样本都稳（2017-21 +24.46%/4%为负，2022-26 +21.55%/6%为负）。
+#      段数 16 → 21（约 1.8/年 → 2.3/年），命中率仍有 95%。
+# 试过但**放弃**的两条：
+#   · 把 VIX 改成滚动分位（"自适应"）：反而更差（+26.68% → +17~19%）。绝对阈值优于相对分位——
+#     VIX 30 是恐慌的绝对刻度，拿它跟过去一年比等于把平静期的小波动也算成恐慌。别"现代化"这条。
+#   · 外挂一条"二档蓝点"（回撤>10% & 站上MA20<15% & VIX分位>70）补 VIX 不到 25 的中级回调：
+#     不加闸门时 2022 年后半段 -0.29%/62%为负（16 天全在 2022 熊市里）；加熊市闸门后 2022 年
+#     之后一次都不触发，等于零样本外证据；而且它并没覆盖当初想补的 2023-10/2024-08/2024-09
+#     （那三次站上MA20占比分别是 15.2/28.7/43.5，都够不着 <15）。整条放弃——
+#     剩下的漏点多数是"VIX 没到、情绪也根本没洗盘"，那不该由情绪指标负责。
+# 顺带：ERP 改纯口径本身就补回了两次大漏——2020-02（-13.2%）与 2024-08（-13.6%），
+# 这两次 VIX 早就过了 30，卡住的是旧口径下偏高的快温度。不用加任何新规则。
+VIX_COLD = 25   # 蓝点预警的附加条件：VIX ≥ 此值
+COLD_TH  = 25.0 # 蓝点的快口径温度门槛（原先直接借用 BANDS[0]=20，现与展示分档解耦：
+                # 展示分档是给人看的语义，信号门槛是标定出来的，两者不该被同一个数字绑死）
 NDX_DD_COLD = 0     # 蓝点附加条件：纳指自峰值回撤 ≥ 此百分比（0 = 不启用）。
                     # 试过 13：十年只挡掉一天（2026-03-27，快温度18.5、VIX31.1、回撤仅11.3%），
                     # 而那次后续3个月涨了28.9%，等于唯一一次生效是挡掉了好信号，故关闭。
@@ -475,7 +569,15 @@ BEAR_TH    = 60    # 熊市中的过热门槛（标准红点是 80）
 # 窄幅逼空评分参数
 NT_WIN = 63     # 回看窗口（约3个月）：窄幅顶是慢慢形成的，不能用短窗口
 NT_DD = 6.0     # 距峰值回撤在此百分比内才算"仍在高位"（0%回撤=100分，-6%及以下=0分）
-NT_TH = 80      # 触发阈值
+NT_TH = 75      # 触发阈值。扫描（连3日）：>70 → 267天/-0.06%/45%为负，>75 → 182天/+0.03%/45%，
+                # >80 → 109天/+0.67%/39%，>85 → 49天/+0.78%/35%（基准 +5.19%/27%为负）。
+                # 原先的 80 恰好在这条曲线上偏高的一档——门槛越低判别力反而越强，说明这个
+                # 评分的信息在中高位就已经出来了，不必等极值。取 75：段数 17 → 28。
+CROWD_TOP2 = 85  # 黑框：TOP2 抱团度的分位门槛（原 90）
+CROWD_LEV  = 75  # 黑框：杠杆多空比的分位门槛（原 80）
+# 黑框扫描（连3日）：90/80 → 69天/23段/+0.35%/38%为负；85/75 → 132天/32段/-0.00%/43%；
+# 80/70 → 211天/+0.40%/41%；90/60 → 107天/+0.24%/47%。整片区间平坦，说明这条规则本身稳健，
+# 那就该往覆盖率那一侧取：85/75 段数从 23 提到 32，质量不降（平均回撤 -9.55%）。
 # 三类预警各用各的参数——顶是慢过程、底是快事件，用同一套过滤必然顾此失彼：
 #   红点：情绪见顶是多日堆积，平滑口径 + 3日确认，滤掉毛刺（实测触发后3个月 +3.3%，基准 +5.4%）
 #   蓝点：恐慌见底是插针，快口径 + 不确认，宁可多叫几次也别错过（3日确认的代价实测中位 -0.52%）
@@ -493,14 +595,15 @@ def _p(n):
 
 ALERTS = [
     {"key": "hot",   "name": "红点预警", "mark": "dot",  "color": "#CE5A4E", "persist": PERSIST,
-     "desc": f"综合温度 > {BANDS[3]:.0f}（极度贪婪），{_p(PERSIST)}"},
+     "desc": f"减仓温度 > {SELL_TH:.0f}，{_p(PERSIST)}（减仓温度＝TOP2抱团×2、杠杆多空比×2、"
+             f"窄幅逼空×3、站上MA20×1、换手率×1 的加权分位，与页面展示的综合温度是两个数）"},
     {"key": "hot_bear", "name": "熊市反弹预警", "mark": "dot", "color": "#CE5A4E", "hollow": True,
      "persist": PERSIST,
      "desc": f"已跌破下行的 {BEAR_MA} 日均线（确认的下行趋势）且综合温度 > {BEAR_TH}，{_p(PERSIST)}。"
              f"熊市里滚动分位的参照系全是低值，反弹再猛也顶不到 {BANDS[3]:.0f}——"
              f"2022 全年零红点正是这么来的，此条专门补上熊市反弹高点的减仓信号"},
     {"key": "cold",  "name": "蓝点预警", "mark": "dot",  "color": "#3D7FB8", "persist": PERSIST_COLD,
-     "desc": f"快口径温度（三个平滑项取当日值）< {BANDS[0]:.0f} 且 VIX ≥ {VIX_COLD}"
+     "desc": f"快口径温度（三个平滑项取当日值）< {COLD_TH:.0f} 且 VIX ≥ {VIX_COLD}"
              + (f"、且纳指自峰值回撤 ≥ {NDX_DD_COLD:.0f}%" if NDX_DD_COLD else "")
              + f"，{_p(PERSIST_COLD)}"},
     {"key": "cold_soft", "name": "空心蓝点（宏观逆风）", "mark": "dot", "color": "#3D7FB8",
@@ -510,7 +613,8 @@ ALERTS = [
              f"此时下跌由分母（贴现率）驱动，情绪见底不等于价格见底——"
              f"2022 年 1/2/4 月三次亏钱的蓝点全部落在此状态内，建议分批而非满仓"},
     {"key": "crowd", "name": "黑框预警", "mark": "box",  "color": "#0B0F16", "persist": PERSIST,
-     "desc": f"TOP2行业成交额占比 > 90 分位 且 杠杆资金多空比 > 80 分位，{_p(PERSIST)}（抱团 + 杠杆做多共振）"},
+     "desc": f"TOP2行业成交额占比 > {CROWD_TOP2} 分位 且 杠杆资金多空比 > {CROWD_LEV} 分位，"
+             f"{_p(PERSIST)}（抱团 + 杠杆做多共振）"},
     {"key": "narrow", "name": "橙线预警", "mark": "line", "color": "#D19A3E", "persist": PERSIST_NARROW,
      "desc": f"窄幅逼空评分 > {NT_TH}，{_p(PERSIST_NARROW)}。评分＝市值加权跑赢等权的分位、"
              f"宽度恶化的分位、距峰值位置三者等权平均，且要求指数 {NT_WIN} 日为涨"
@@ -554,17 +658,19 @@ def bear_regime(px):
 
 
 def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
-                 narrow=None, real_rate=None):
+                 narrow=None, real_rate=None, temp_sell=None):
     """→ {key: [bool, ...]}，与 temp 索引对齐。
 
-    temp      主口径温度（三项平滑），用于红点与页面展示
+    temp      主口径温度（三项平滑），用于页面展示与熊市反弹预警
+    temp_sell 减仓温度（SELL_W 加权），仅用于红点；缺省时红点退回用主口径 > BANDS[3]，
+              行为与旧版一致（compose_sell 拿不到窄幅评分时就是这种情况）
     temp_fast 快口径温度（同样六项等权，但三个平滑项取当日值），仅用于蓝点；
               缺省时蓝点退回用主口径，行为与旧版一致。
     real_rate 10 年期实际利率；缺省时蓝点不做宏观分级（全部记为实心蓝点）。
     """
     t = temp
     tc = t if temp_fast is None else temp_fast.reindex(t.index)
-    cold = (tc < BANDS[0])
+    cold = (tc < COLD_TH)
     if vix is not None:
         cold = cold & (vix.reindex(t.index) >= VIX_COLD)
     if ndx is not None and NDX_DD_COLD:
@@ -574,7 +680,9 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
         drawdown = (px / px.cummax() - 1.0) * 100.0     # ≤0，峰值为截至当日的累计最高
         cold = cold & (drawdown <= -NDX_DD_COLD)
     px = ndx.reindex(t.index).ffill() if ndx is not None else None
-    hot = (t > BANDS[3])
+    # 红点走减仓温度；拿不到时退回旧行为（主温度 > BANDS[3]）
+    ts = t if temp_sell is None else temp_sell.reindex(t.index)
+    hot = (ts > (BANDS[3] if temp_sell is None else SELL_TH))
     bear = bear_regime(px)
     if bear is None:
         bear = pd.Series(False, index=t.index)
@@ -588,9 +696,9 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
     if crowd_pct is not None:
         # 黑框单独用 252 日滚动分位：扩张窗口"永不遗忘"，2020-21 的极值会把后来的
         # 抱团永久挡在 90 分位之外——实测扩张口径下 2022 年之后再没触发过，等于失明。
-        out["crowd"] = (crowd_pct["top2"] > 90) & (crowd_pct["leverage"] > 80)
+        out["crowd"] = (crowd_pct["top2"] > CROWD_TOP2) & (crowd_pct["leverage"] > CROWD_LEV)
     elif "top2" in pct.columns and "leverage" in pct.columns:
-        out["crowd"] = (pct["top2"] > 90) & (pct["leverage"] > 80)
+        out["crowd"] = (pct["top2"] > CROWD_TOP2) & (pct["leverage"] > CROWD_LEV)
     else:
         out["crowd"] = pd.Series(False, index=t.index)
     out["narrow"] = ((narrow.reindex(t.index) > NT_TH) if narrow is not None
@@ -658,10 +766,33 @@ def compose(rawdf, dirseries=None, fast=False):
     return pct, adj, temp_raw, temp_adj
 
 
+def compose_sell(adj, rawdf):
+    """减仓温度：按 SELL_W 加权合成，只喂给红点预警，不作为页面展示的综合温度。
+
+    分项取**方向修正后**的分位（与综合温度同源，保证两个数可比），窄幅评分取
+    _narrow_neutral（下跌市填 50 的那一版）。任一分项缺失则当日不出减仓温度——
+    与综合温度一样，宁可不出，也不用半套输入产出一个看似正常的读数。
+    数据不足以合成时返回 None，调用方退回用综合温度，行为与旧版一致。
+    """
+    parts, weights = [], []
+    for c, w in SELL_W.items():
+        col = rawdf.get("_narrow_neutral") if c == "narrow" else adj.get(c)
+        if col is None:
+            return None
+        parts.append(col)
+        weights.append(w)
+    X = pd.concat(parts, axis=1)
+    w = np.array(weights, dtype=float)
+    w = w / w.sum()
+    t = pd.Series((X.values * w).sum(axis=1), index=X.index)
+    return t.where(X.notna().all(axis=1))
+
+
 def main():
     rawdf, meta, spy = build_indicators()
     dirs = direction(spy, rawdf.index)
     pct, adj, temp_raw, temp_adj = compose(rawdf, dirs)
+    temp_sell = compose_sell(adj, rawdf)
     have = temp_adj.dropna()
     if len(have) == 0:
         raise SystemExit("温度序列为空")
@@ -678,6 +809,10 @@ def main():
         "dir_win": DIR_WIN, "directional": DIRECTIONAL,
         "temperature": round(float(temp_adj.loc[last]), 1),
         "temperature_raw": round(float(temp_raw.loc[last]), 1),
+        "temperature_sell": (round(float(temp_sell.loc[last]), 1)
+                             if temp_sell is not None and last in temp_sell.index
+                             and np.isfinite(temp_sell.loc[last]) else None),
+        "sell_weights": dict(SELL_W), "sell_threshold": SELL_TH,
         "regime": regime(float(temp_adj.loc[last])),
         "regime_raw": regime(float(temp_raw.loc[last])),
         "direction": round(float(dirs.loc[last]), 3) if dirs is not None else None,
@@ -697,6 +832,9 @@ def main():
             "temperature": [round(float(v), 2) for v in have.values],
             "temperature_raw": [None if not np.isfinite(v) else round(float(v), 2)
                                 for v in temp_raw.reindex(have.index).values],
+            "temperature_sell": ([None if not np.isfinite(v) else round(float(v), 2)
+                                  for v in temp_sell.reindex(have.index).values]
+                                 if temp_sell is not None else None),
             "direction": [None if not np.isfinite(v) else round(float(v), 3)
                           for v in dirs.reindex(have.index).values] if dirs is not None else None,
         },
@@ -732,6 +870,7 @@ def main():
                               for c in ["top2", "leverage"] if c in rawdf.columns})
     rr = load_real_rate(have.index)
     al = build_alerts(temp_adj.reindex(have.index), adj.reindex(have.index), vix, temp_fast,
+                      temp_sell=(temp_sell.reindex(have.index) if temp_sell is not None else None),
                       crowd_pct=crowd_pct if len(crowd_pct.columns) == 2 else None,
                       ndx=(ndx["close"].reindex(have.index) if ndx is not None else None),
                       narrow=(rawdf["_narrow_score"].reindex(have.index)
@@ -802,6 +941,11 @@ def main():
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
     print(f"温度 {out['temperature']} ({out['regime']})  原始口径 {out['temperature_raw']} ({out['regime_raw']})  截至 {out['as_of']}")
+    if out.get("temperature_sell") is not None:
+        print(f"减仓温度 {out['temperature_sell']}（门槛 {SELL_TH:.0f}，权重 "
+              + " ".join(f"{k}x{v:g}" for k, v in SELL_W.items()) + "）"
+              + (f"  快口径温度 {out['temperature_fast']}（蓝点门槛 {COLD_TH:.0f} 且 VIX≥{VIX_COLD}）"
+                 if out.get("temperature_fast") is not None else ""))
     print(f"样本 {out['coverage']['stocks']} 成分股 / {out['coverage']['sectors']} 行业，历史 {out['coverage']['history_days']} 交易日，温度序列 {len(have)} 点")
     for i in out["indicators"]:
         tag = " [方向修正]" if i["signed"] else (" [已反向]" if i["inverted"] else "")
