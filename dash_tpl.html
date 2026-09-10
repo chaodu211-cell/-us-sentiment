@@ -1,0 +1,808 @@
+<title>美股情绪温度计</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap">
+<style>
+:root{
+  --bg:#0A0E14; --surface:#111823; --surface2:#16202E; --border:#1E2B3B; --border-2:#2A3B4F;
+  --ink:#E3EAF2; --ink2:#8DA2B8; --ink3:#56687D;
+  --r1:#3D7FB8; --r2:#4FA3A0; --r3:#8A93A0; --r4:#D19A3E; --r5:#CE5A4E;
+  --sans:"Noto Sans SC",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --pad:clamp(16px,3.5vw,40px);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-weight:400;
+     font-size:15px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:var(--pad) var(--pad) 72px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---------- header ---------- */
+header{display:flex;flex-wrap:wrap;gap:16px 24px;align-items:baseline;justify-content:space-between;
+       padding-bottom:18px;border-bottom:1px solid var(--border)}
+h1{margin:0;font-size:clamp(20px,3vw,26px);font-weight:500;letter-spacing:.02em;text-wrap:balance}
+h1 span{color:var(--ink3);font-weight:300}
+.meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chip{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;color:var(--ink2);
+      background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:4px 9px;white-space:nowrap}
+
+/* ---------- hero ---------- */
+.hero{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:clamp(24px,5vw,56px);
+      align-items:center;padding:clamp(28px,5vw,44px) 0;border-bottom:1px solid var(--border)}
+@media(max-width:720px){.hero{grid-template-columns:1fr;gap:28px}}
+.big{font-family:var(--mono);font-size:clamp(64px,15vw,116px);font-weight:300;line-height:.86;
+     letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.hero-label{font-size:11.5px;letter-spacing:.16em;color:var(--ink3);font-family:var(--mono);margin-bottom:14px}
+.regime{display:inline-flex;align-items:center;gap:9px;margin-top:18px;font-size:19px;font-weight:500;letter-spacing:.04em}
+.dot{width:11px;height:11px;border-radius:50%;flex:none}
+.delta{font-family:var(--mono);font-size:13px;color:var(--ink2);margin-top:10px}
+
+/* thermometer band */
+.band-wrap{min-width:0}
+.band{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;height:34px;border-radius:3px;overflow:hidden}
+.band div{position:relative}
+.band-axis{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;margin-top:7px}
+.band-axis span{font-family:var(--mono);font-size:10.5px;color:var(--ink3);letter-spacing:.03em;text-align:center}
+.band-names{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;margin-top:3px}
+.band-names span{font-size:11.5px;color:var(--ink2);text-align:center;letter-spacing:.02em}
+.marker{position:relative;height:20px;margin-bottom:5px}
+.marker i{position:absolute;transform:translateX(-50%);font-family:var(--mono);font-size:11px;
+          color:var(--ink);font-style:normal;white-space:nowrap;top:0}
+.marker b{position:absolute;transform:translateX(-50%);width:2px;height:7px;background:var(--ink);bottom:-1px}
+
+/* ---------- sections ---------- */
+section{padding-top:clamp(30px,5vw,46px)}
+h2{margin:0 0 4px;font-size:15px;font-weight:500;letter-spacing:.03em}
+.sub{margin:0 0 20px;font-size:12.5px;color:var(--ink3);line-height:1.55}
+.chart-box{border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:14px 12px 8px;overflow-x:auto}
+svg{display:block}
+.alegend{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:14px}
+.acard{border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:12px 14px}
+.acard b{display:flex;align-items:center;gap:9px;font-size:13.5px;font-weight:500;margin-bottom:5px}
+.acard em{display:block;font-style:normal;font-size:11.5px;color:var(--ink3);line-height:1.55}
+.acard u{display:block;text-decoration:none;font-family:var(--mono);font-size:11.5px;color:var(--ink2);margin-top:7px}
+.mk{width:13px;height:13px;flex:none;border-radius:50%}
+.mk.box{border-radius:2px;border:2px solid}
+.mk.line{width:17px;height:3px;border-radius:2px}
+.mk.hollow{background:none;border:2px solid}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;padding:0 4px}
+.legend span{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink2);font-family:var(--mono)}
+.sw{width:10px;height:10px;border-radius:2px;flex:none}
+
+/* ---------- indicator table ---------- */
+.rows{display:flex;flex-direction:column;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:4px;overflow:hidden}
+.row{display:grid;grid-template-columns:minmax(150px,1.5fr) minmax(90px,.85fr) minmax(160px,1.6fr) 92px;
+     gap:clamp(10px,2vw,22px);align-items:center;background:var(--surface);padding:15px clamp(12px,2vw,18px)}
+@media(max-width:780px){
+  .row{grid-template-columns:1fr 88px;grid-template-areas:"nm pc" "rw rw" "bar bar";gap:9px}
+  .r-nm{grid-area:nm}.r-rw{grid-area:rw}.r-bar{grid-area:bar}.r-pc{grid-area:pc;text-align:right}
+}
+.r-nm b{display:block;font-weight:500;font-size:14.5px;letter-spacing:.02em}
+.r-nm em{display:block;font-style:normal;font-size:11.5px;color:var(--ink3);margin-top:2px}
+.r-rw{font-family:var(--mono);font-size:13px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.r-rw u{display:block;text-decoration:none;font-size:10.5px;color:var(--ink3);letter-spacing:.03em}
+.pbar{position:relative;height:8px;background:var(--surface2);border-radius:2px;overflow:hidden}
+.pbar i{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+.pticks{position:relative;height:12px;margin-top:4px}
+.pticks u{position:absolute;top:0;width:1px;height:4px;background:var(--border-2)}
+.r-pc{font-family:var(--mono);font-size:22px;font-weight:400;text-align:right;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.r-pc s{display:block;text-decoration:none;font-size:10px;color:var(--ink3);letter-spacing:.05em;margin-top:1px}
+.inv{display:inline-block;font-family:var(--mono);font-size:9.5px;color:var(--r1);border:1px solid var(--r1);
+     border-radius:2px;padding:0 4px;margin-left:6px;vertical-align:1.5px;letter-spacing:.04em}
+
+/* ---------- method ---------- */
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.g2x2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:720px){.g2x2{grid-template-columns:1fr}}
+.card{border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:16px 18px}
+.card h3{margin:0 0 9px;font-size:12px;font-weight:500;letter-spacing:.09em;color:var(--ink2);font-family:var(--mono)}
+.card p{margin:0 0 8px;font-size:13px;color:var(--ink2);line-height:1.62}
+.card p:last-child{margin-bottom:0}
+ol.steps{margin:0;padding-left:0;list-style:none;counter-reset:s}
+ol.steps li{counter-increment:s;position:relative;padding-left:30px;margin-bottom:10px;font-size:13px;color:var(--ink2);line-height:1.6}
+ol.steps li:last-child{margin-bottom:0}
+ol.steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:19px;height:19px;border-radius:3px;
+  background:var(--surface2);border:1px solid var(--border-2);color:var(--ink3);font-family:var(--mono);
+  font-size:10.5px;display:flex;align-items:center;justify-content:center}
+.warn{border-left:2px solid var(--r4)}
+.limgrid{columns:2;column-gap:26px}
+.limgrid p{break-inside:avoid;margin:0 0 12px}
+@media(max-width:820px){.limgrid{columns:1}}
+#methods{columns:2;column-gap:26px}
+#methods p{break-inside:avoid}
+@media(max-width:820px){#methods{columns:1}}
+.warn h3{color:var(--r4)}
+code{font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);
+     border-radius:2px;padding:1px 5px;color:var(--ink)}
+footer{margin-top:38px;padding-top:18px;border-top:1px solid var(--border);font-size:11.5px;color:var(--ink3);line-height:1.7}
+a{color:var(--ink2)}
+:focus-visible{outline:2px solid var(--r2);outline-offset:2px}
+
+/* tooltip */
+.rangebar{display:flex;gap:4px;margin:0 0 12px}
+.rangebar button{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;color:var(--ink2);
+  background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:5px 12px;cursor:pointer}
+.rangebar button:hover{color:var(--ink);border-color:var(--border-2)}
+.rangebar button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+
+.rangebar{align-items:center;flex-wrap:wrap}
+.rangebar .sep{width:1px;align-self:stretch;background:var(--border);margin:0 4px}
+.rslider{position:relative;flex:1 1 260px;min-width:220px;height:28px;margin:0 4px}
+.rslider .track{position:absolute;left:0;right:0;top:50%;height:3px;transform:translateY(-50%);
+  background:var(--border-2);border-radius:2px}
+.rslider .fill{position:absolute;top:50%;height:3px;transform:translateY(-50%);
+  background:var(--ink2);border-radius:2px}
+.rslider input[type=range]{position:absolute;left:0;right:0;top:0;width:100%;height:28px;margin:0;
+  background:transparent;-webkit-appearance:none;appearance:none;pointer-events:none}
+.rslider input[type=range]::-webkit-slider-runnable-track{-webkit-appearance:none;background:transparent;height:28px}
+.rslider input[type=range]::-moz-range-track{background:transparent;height:28px;border:none}
+.rslider input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;
+  width:14px;height:14px;border-radius:50%;margin-top:7px;background:var(--ink);border:2px solid var(--bg);
+  box-shadow:0 0 0 1px var(--border-2);cursor:grab}
+.rslider input[type=range]::-moz-range-thumb{pointer-events:auto;width:14px;height:14px;border-radius:50%;
+  background:var(--ink);border:2px solid var(--bg);box-shadow:0 0 0 1px var(--border-2);cursor:grab}
+.rslider input[type=range]:active::-webkit-slider-thumb{cursor:grabbing}
+.rslider input[type=range]:focus-visible::-webkit-slider-thumb{outline:2px solid var(--r2);outline-offset:1px}
+.rslider input[type=range]{z-index:2}
+.rslider input[type=range]:focus,
+.rslider input[type=range]:active{z-index:3}
+.rlabels{display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--ink3);
+  white-space:nowrap}
+.rlabels b{color:var(--ink2);font-weight:500}
+.rangebar button.custom-on{background:var(--surface2);color:var(--ink2);border-color:var(--border-2);
+  box-shadow:inset 0 0 0 1px var(--r2)}
+table.ext{width:100%;border-collapse:collapse;font-size:13px}
+table.ext th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+  color:var(--ink3);font-weight:400;padding:0 10px 8px 0;border-bottom:1px solid var(--border)}
+table.ext td{padding:9px 10px 9px 0;border-bottom:1px solid var(--border);vertical-align:baseline}
+table.ext tr:last-child td{border-bottom:none}
+table.ext .d{font-family:var(--mono);color:var(--ink3);font-size:11.5px;white-space:nowrap}
+table.ext .v{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;font-size:15px}
+table.ext .r{white-space:nowrap;font-size:12.5px}
+#tip{position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;background:#0d141d;
+     border:1px solid var(--border-2);border-radius:3px;padding:8px 11px;font-family:var(--mono);
+     font-size:11.5px;line-height:1.6;white-space:nowrap;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.55)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>美股情绪温度计 <span>US Equity Sentiment</span></h1>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="hero">
+    <div>
+      <div class="hero-label">综合温度</div>
+      <div class="big" id="temp">--</div>
+      <div class="regime" id="regime"></div>
+      <div class="delta" id="delta"></div>
+      <div class="delta" id="rawnote" style="margin-top:6px"></div>
+    </div>
+    <div class="band-wrap">
+      <div class="marker" id="marker"></div>
+      <div class="band" id="band"></div>
+      <div class="band-axis" id="band-axis"></div>
+      <div class="band-names"><span>极度恐慌</span><span>偏冷</span><span>中性</span><span>偏热</span><span>极度贪婪</span></div>
+    </div>
+  </div>
+
+  <section>
+    <h2>温度走势</h2>
+    <p class="sub" id="hist-sub"></p>
+    <div class="rangebar" id="rangebar">
+      <span id="rbtns"></span>
+      <span class="sep" aria-hidden="true"></span>
+      <div class="rslider" id="rslider">
+        <div class="track"></div>
+        <div class="fill" id="rfill"></div>
+        <input type="range" id="rmin" step="1">
+        <input type="range" id="rmax" step="1">
+      </div>
+      <div class="rlabels" id="rlabels"></div>
+    </div>
+    <div class="chart-box"><div style="position:relative"><svg id="cTemp" role="img" aria-label="综合情绪温度历史走势"></svg><div id="tip"></div></div></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section>
+    <h2>纳斯达克100 与预警点位</h2>
+    <p class="sub" id="ndx-sub"></p>
+    <div class="chart-box"><div style="position:relative"><svg id="cNdx" role="img" aria-label="纳斯达克100走势与情绪预警点位"></svg><div id="tip2"></div></div></div>
+    <p class="sub" id="macrobar" style="margin:14px 0 0"></p>
+    <div id="rrbox" class="chart-box" style="display:none;margin-top:8px">
+      <svg id="cRR" role="img" aria-label="10年期实际利率与贴现率重估状态"></svg>
+      <p class="sub" style="margin:6px 0 0;font-size:11px">
+        10年期TIPS实际利率（美国财政部日频）。橙色底纹＝贴现率重估状态：水位在虚线
+        <b id="rrlvl"></b> 以下、且较 126 个交易日（约 6 个月）前上行超过 <b id="rrrise"></b>，带滞回。
+        此状态内的蓝点画成空心。</p>
+    </div>
+    <div id="alegend" class="alegend"></div>
+  </section>
+
+  <section>
+    <h2>六个分项</h2>
+    <p class="sub">每项先算过去 252 个交易日的滚动分位，再等权平均。分位越高＝该维度越"热"。迷你图为该项分位的历史走势，中线为 50 分位。</p>
+    <div class="rows" id="rows"></div>
+  </section>
+
+  <section>
+    <h2>合成方法</h2>
+    <div class="grid2" style="margin-top:16px">
+      <div class="card">
+        <h3>五个步骤</h3>
+        <ol class="steps">
+          <li>每个指标计算滚动 <code>252</code> 日分位数，把绝对值转成相对历史水平的百分位。</li>
+          <li>ERP 分位取反向 <code>100 − pct</code>，使其与其他指标方向一致（高值＝情绪热）。</li>
+          <li><strong style="color:var(--ink)">活跃度指标按市场方向定向</strong>：换手率与杠杆资金对恐慌和狂热同样敏感，方向不可知。对<em style="font-style:normal;color:var(--ink)">高于常态</em>的部分乘以方向系数 <code>d = tanh(r₂₀ / 1.5σ)</code>；低于常态的部分记为中性 50。</li>
+          <li>六个分位数<strong style="color:var(--ink)">等权平均</strong>，得到综合温度。</li>
+          <li>按 <span id="bandtxt"></span> 划分五个情绪区间。</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>ERP 的加息周期修正</h3>
+        <p>ERP＝E/P−10Y 在加息周期会被单边压缩：2022 年 10Y 从约 1.6% 升到约 4%，ERP 跟着一路走低，252 日窗口把这段<em style="font-style:normal;color:var(--ink)">利率趋势</em>当成了情绪波动。</p>
+        <p>现口径取 <code>0.5 × ERP分位 + 0.5 × E/P分位</code>。E/P 不含利率，不受加息周期污染；ERP 保留股债相对价值的信息。两者各半，既不丢利率信息，也不让它主导。</p>
+      </div>
+      <div class="card">
+        <h3>三类预警各用各的参数</h3>
+        <p><strong style="color:var(--ink)">顶是慢过程，底是快事件。</strong>情绪见顶靠多日堆积，过滤毛刺有价值；恐慌见底常是 1–3 天的插针，平滑和多日确认恰好把尖峰削平。用同一套参数必然顾此失彼。</p>
+        <p><strong style="color:var(--ink)">红点</strong>用主口径温度（三项平滑）+ 连续3日确认；<strong style="color:var(--ink)">蓝点</strong>改用<em style="font-style:normal;color:var(--ink)">快口径温度</em>——同样六项等权，但换手率、上涨占比、杠杆多空比一律取当日值不平滑——且当日成立即触发；<strong style="color:var(--ink)">黑框</strong>保留主口径 + 3日确认。页面顶部显示的综合温度始终是主口径，快口径只在预警图的悬浮提示里并列。</p>
+      </div>
+      <div class="card">
+        <h3>方向系数 d</h3>
+        <p><code>r₂₀</code> 为标普500 的 20 日收益，<code>σ</code> 为其滚动 252 日标准差。<code>d ∈ [−1, +1]</code>：强势上涨 → +1（放量＝贪婪）；急跌 → −1（放量＝恐慌）；横盘 → ≈0（放量不含方向信息）。</p>
+        <p>用 <code>tanh</code> 平滑，符号翻转处不产生跳变。只对高于常态的活跃度定向，避免"缩量下跌＝偏热"这类反直觉读数。</p>
+      </div>
+      <div class="card">
+        <h3>分位数口径</h3>
+        <p>采用 <code>percentileofscore(mean)</code>：分位 = (小于当前值的个数 + 0.5 × 等于当前值的个数) ÷ 窗口长度 × 100。</p>
+        <p>已用独立实现与 <code>scipy.stats.percentileofscore</code> 逐点交叉验证，最大偏差 <code>7e-15</code>。</p>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <div class="card"><h3>指标口径</h3><div id="methods"></div></div>
+    </div>
+    <div style="margin-top:14px">
+      <div class="card warn"><h3>已知局限</h3><div id="limits" class="limgrid"></div></div>
+    </div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const D = __DATA__;
+const B = (typeof D !== "undefined" && D.bands) ? D.bands : [20, 40, 60, 80];
+const R = [
+  {max:B[0], name:"极度恐慌", c:"var(--r1)", hex:"#3D7FB8"},
+  {max:B[1], name:"偏冷",     c:"var(--r2)", hex:"#4FA3A0"},
+  {max:B[2], name:"中性",     c:"var(--r3)", hex:"#8A93A0"},
+  {max:B[3], name:"偏热",     c:"var(--r4)", hex:"#D19A3E"},
+  {max:101,  name:"极度贪婪", c:"var(--r5)", hex:"#CE5A4E"}
+];
+const regOf = t => R.find(r => t < r.max) || R[4];
+const $ = id => document.getElementById(id);
+
+/* ---- header ---- */
+$("meta").innerHTML = [
+  `数据截至 ${D.as_of}`,
+  `全样本 ${D.coverage.stocks} 只成分股 · ${D.coverage.sectors} 个GICS行业`,
+  `杠杆ETF ${D.coverage.lev_long}多/${D.coverage.lev_short}空`,
+  `日频 ${D.coverage.history_days} 交易日`,
+  `${D.coverage.history_start.slice(0,4)}–${D.coverage.history_end.slice(0,4)}`
+].map(t => `<span class="chip">${t}</span>`).join("");
+
+/* ---- hero ---- */
+const cur = regOf(D.temperature);
+$("temp").textContent = D.temperature.toFixed(1);
+$("temp").style.color = cur.hex;
+$("regime").innerHTML = `<span class="dot" style="background:${cur.hex}"></span>${cur.name}`;
+const S = D.series.temperature, N = S.length;
+const d5 = N > 5 ? D.temperature - S[N-6] : null;
+const d20 = N > 20 ? D.temperature - S[N-21] : null;
+$("rawnote").innerHTML = D.temperature_raw == null ? "" :
+  `原始口径 <span style="color:${regOf(D.temperature_raw).hex}">${D.temperature_raw.toFixed(1)} · ${D.regime_raw}</span>` +
+  `　<span style="color:var(--ink3)">（未对活跃度指标做方向修正）</span>`;
+$("delta").textContent = [
+  d5  !== null ? `5日 ${d5>0?"+":""}${d5.toFixed(1)}`   : "",
+  d20 !== null ? `20日 ${d20>0?"+":""}${d20.toFixed(1)}` : "",
+  `区间 ${Math.min(...S).toFixed(1)}–${Math.max(...S).toFixed(1)}`
+].filter(Boolean).join("   ·   ");
+
+$("band").innerHTML = R.map(r => `<div style="background:${r.hex};opacity:${r===cur?1:.28}"></div>`).join("");
+if ($("bandtxt")) $("bandtxt").textContent = B.map(x => x.toFixed(0)).join(" / ");
+$("band-axis").innerHTML = R.map((r, i) =>
+  `<span>${i === 0 ? 0 : B[i-1]}–${i === R.length-1 ? 100 : B[i]}</span>`).join("");
+/* 色带是 5 等宽格，但区间边界不等宽（28/46/61/76），
+   所以指针要按"落在第几格 + 格内相对位置"定位，不能直接用温度当百分比。 */
+function bandPos(v){
+  const edges = [0, ...B, 100];
+  for (let i = 0; i < 5; i++){
+    if (v < edges[i+1] || i === 4){
+      const f = Math.max(0, Math.min(1, (v - edges[i]) / (edges[i+1] - edges[i])));
+      return (i + f) / 5 * 100;
+    }
+  }
+  return 100;
+}
+$("marker").innerHTML =
+  `<i style="left:${Math.min(97,Math.max(3,bandPos(D.temperature)))}%">${D.temperature.toFixed(1)}</i>` +
+  `<b style="left:${Math.min(99.5,Math.max(.5,bandPos(D.temperature)))}%"></b>`;
+
+/* ---- 区间切换 ---- */
+const RANGES = [[252,"1年"],[756,"3年"],[1260,"5年"],[99999,"全部"]];
+let RSTART = Math.max(0, N - 756), REND = N - 1;   // 默认 3 年
+
+/* ---- shared chart helpers ---- */
+const NS = "http://www.w3.org/2000/svg";
+const el = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+const fmtDate = s => s.slice(5).replace("-", "/");
+
+function axisDates(dates, n){
+  const out = [], step = Math.max(1, Math.floor((dates.length - 1) / (n - 1)));
+  for (let i = 0; i < dates.length; i += step) out.push(i);
+  const last = dates.length - 1;
+  if (out[out.length-1] !== last){
+    if (last - out[out.length-1] < step * 0.6) out[out.length-1] = last;
+    else out.push(last);
+  }
+  return out;
+}
+
+/* ---- temperature chart ---- */
+const W = 1000, H = 300, M = {t:12, r:14, b:26, l:34};
+function drawTemp(){
+  const svg = $("cTemp");
+  svg.innerHTML = "";
+  const A = RSTART, Bx = REND + 1, S2 = S.slice(A, Bx), N2 = S2.length, D2 = D.series.dates.slice(A, Bx);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", "100%");
+  svg.style.minWidth = "560px";
+  svg.style.height = "auto";
+  const iw = W - M.l - M.r, ih = H - M.t - M.b;
+  const x = i => M.l + (N2 === 1 ? iw/2 : i / (N2 - 1) * iw);
+  const y = v => M.t + (1 - v / 100) * ih;
+
+  // regime bands
+  let lo = 0;
+  R.forEach(r => {
+    const hi = Math.min(r.max, 100);
+    svg.appendChild(el("rect", {x:M.l, y:y(hi), width:iw, height:y(lo)-y(hi),
+      fill:r.hex, opacity:.075}));
+    lo = hi;
+  });
+  // gridlines + y labels
+  [0, ...B, 100].forEach(v => {
+    svg.appendChild(el("line", {x1:M.l, x2:M.l+iw, y1:y(v), y2:y(v),
+      stroke:"#2A3B4F", "stroke-width":v===0||v===100?1:.6, opacity:v===0||v===100?.8:.5}));
+    const t = el("text", {x:M.l-7, y:y(v)+3.5, "text-anchor":"end", fill:"#56687D",
+      "font-size":10.5, "font-family":"IBM Plex Mono, monospace"});
+    t.textContent = v; svg.appendChild(t);
+  });
+  // x labels
+  const longSpan = N2 > 400;
+  const ticksT = axisDates(D2, longSpan ? 9 : 7);
+  ticksT.forEach((i, k) => {
+    const anch = k === 0 ? "start" : k === ticksT.length - 1 ? "end" : "middle";
+    const t = el("text", {x:x(i), y:H-8, "text-anchor":anch, fill:"#56687D",
+      "font-size":10.5, "font-family":"IBM Plex Mono, monospace"});
+    t.textContent = longSpan ? D2[i].slice(0,7) : fmtDate(D2[i]); svg.appendChild(t);
+  });
+  // area + line
+  const pts = S2.map((v,i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
+  const grad = el("linearGradient", {id:"g1", x1:0, y1:0, x2:0, y2:1});
+  grad.appendChild(el("stop", {offset:"0%",   "stop-color":cur.hex, "stop-opacity":.30}));
+  grad.appendChild(el("stop", {offset:"100%", "stop-color":cur.hex, "stop-opacity":.02}));
+  const defs = el("defs", {}); defs.appendChild(grad); svg.appendChild(defs);
+  svg.appendChild(el("polygon", {points:`${x(0)},${y(0)} ${pts} ${x(N2-1)},${y(0)}`, fill:"url(#g1)"}));
+  svg.appendChild(el("polyline", {points:pts, fill:"none", stroke:cur.hex,
+    "stroke-width": N2 > 1200 ? 1.1 : N2 > 500 ? 1.5 : 2,
+    "stroke-linejoin":"round", "stroke-linecap":"round"}));
+  svg.appendChild(el("circle", {cx:x(N2-1), cy:y(S2[N2-1]), r:4.5, fill:cur.hex,
+    stroke:"#111823", "stroke-width":2}));
+
+  // hover
+  const cross = el("line", {x1:0, x2:0, y1:M.t, y2:M.t+ih, stroke:"#8DA2B8",
+    "stroke-width":1, "stroke-dasharray":"3 3", opacity:0});
+  const hov = el("circle", {r:4.5, fill:"#E3EAF2", opacity:0});
+  svg.appendChild(cross); svg.appendChild(hov);
+  const tip = $("tip");
+  svg.addEventListener("pointermove", ev => {
+    const bb = svg.getBoundingClientRect();
+    const px = (ev.clientX - bb.left) / bb.width * W;
+    let i = Math.round((px - M.l) / iw * (N2 - 1));
+    i = Math.max(0, Math.min(N2 - 1, i));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", .55);
+    hov.setAttribute("cx", x(i)); hov.setAttribute("cy", y(S2[i])); hov.setAttribute("opacity", 1);
+    const r = regOf(S2[i]), gi = A + i;
+    tip.innerHTML = `<span style="color:#8DA2B8">${D2[i]}</span><br>` +
+      `<span style="color:${r.hex}">● </span>温度 ${S2[i].toFixed(1)} · ${r.name}` +
+      (D.series.spx && D.series.spx[gi] ? `<br><span style="color:#8DA2B8">标普500 ${Math.round(D.series.spx[gi])}</span>` : "");
+    tip.style.opacity = 1;
+    const lft = x(i) / W * bb.width;
+    tip.style.left = Math.min(bb.width - 160, Math.max(0, lft + 12)) + "px";
+    tip.style.top = (y(S2[i]) / H * bb.height - 10) + "px";
+  });
+  svg.addEventListener("pointerleave", () => {
+    cross.setAttribute("opacity", 0); hov.setAttribute("opacity", 0); tip.style.opacity = 0;
+  });
+}
+
+/* ---- 纳斯达克走势 + 预警点位 ---- */
+const AL = D.alerts || {rules:[], flags:{}, counts:{}};
+const FAST = D.series.temperature_fast || null;   // 快口径温度（不平滑），蓝点预警据此判定
+const NSCORE = D.series.narrow_score || null;     // 窄幅逼空评分，橙三角预警据此判定
+const NDX = D.series.ndx;
+function drawNdx(){
+  const svg = $("cNdx");
+  if (!NDX) { svg.closest("section").style.display = "none"; return; }
+  svg.innerHTML = "";
+  const A = RSTART, Bx = REND + 1, sp = NDX.slice(A, Bx), D2 = D.series.dates.slice(A, Bx), N2 = sp.length;
+  const h = 300, m = {t:14, r:14, b:26, l:52};
+  svg.setAttribute("viewBox", `0 0 ${W} ${h}`);
+  svg.setAttribute("width", "100%"); svg.style.minWidth = "560px"; svg.style.height = "auto";
+  const iw = W - m.l - m.r, ih = h - m.t - m.b;
+  const vals = sp.filter(v => v != null);
+  const lo = Math.min(...vals), hi = Math.max(...vals), pad = (hi - lo) * .10 || 1;
+  const x = i => m.l + i / (N2 - 1) * iw;
+  const y = v => m.t + (1 - (v - lo + pad) / (hi - lo + 2*pad)) * ih;
+
+  [lo, lo + (hi-lo)/2, hi].forEach(v => {
+    svg.appendChild(el("line", {x1:m.l, x2:m.l+iw, y1:y(v), y2:y(v), stroke:"#2A3B4F", "stroke-width":.6, opacity:.5}));
+    const tx = el("text", {x:m.l-7, y:y(v)+3.5, "text-anchor":"end", fill:"#56687D",
+      "font-size":10.5, "font-family":"IBM Plex Mono, monospace"});
+    tx.textContent = Math.round(v); svg.appendChild(tx);
+  });
+  const longSpan = N2 > 400;
+  const ticks = axisDates(D2, longSpan ? 9 : 7);
+  ticks.forEach((i, k) => {
+    const anch = k === 0 ? "start" : k === ticks.length - 1 ? "end" : "middle";
+    const tx = el("text", {x:x(i), y:h-8, "text-anchor":anch, fill:"#56687D",
+      "font-size":10.5, "font-family":"IBM Plex Mono, monospace"});
+    tx.textContent = longSpan ? D2[i].slice(0,7) : fmtDate(D2[i]); svg.appendChild(tx);
+  });
+  const pts = sp.map((v,i) => v == null ? null : `${x(i).toFixed(2)},${y(v).toFixed(2)}`).filter(Boolean).join(" ");
+  svg.appendChild(el("polyline", {points:pts, fill:"none", stroke:"#7E8FA3",
+    "stroke-width": N2 > 1200 ? 1 : 1.5, "stroke-linejoin":"round"}));
+
+  // 预警点位：先画框（面积大），再画点，避免遮挡
+  const rule = k => AL.rules.find(r => r.key === k);
+  const flag = k => (AL.flags[k] || []).slice(A);
+  const fc = flag("crowd"), fh = flag("hot"), fl = flag("cold"), fn = flag("narrow"),
+        fhb = flag("hot_bear"), fls = flag("cold_soft");
+  const rc = rule("crowd"), rh = rule("hot"), rlo = rule("cold"), rn = rule("narrow"),
+        rhb = rule("hot_bear"), rls = rule("cold_soft");
+  const s = N2 > 1200 ? 7 : 9;
+  // 窄幅逼空：不打点，直接把这段指数走势线本身染成橙色——它是持续多日的形态，
+  // 用线段比用标记更贴切，也更一眼看得出"这一段行情是窄幅逼空"。
+  if (rn){
+    let a = null;
+    const flush = b => {
+      if (a === null) return;
+      const from = Math.max(0, a - 1);          // 往前接一个点，让色段与灰线自然衔接
+      const seg = [];
+      for (let k = from; k <= b; k++) if (sp[k] != null) seg.push(`${x(k).toFixed(2)},${y(sp[k]).toFixed(2)}`);
+      if (seg.length >= 2)
+        svg.appendChild(el("polyline", {points:seg.join(" "), fill:"none", stroke:rn.color,
+          "stroke-width": N2 > 1200 ? 2 : 2.6, "stroke-linejoin":"round", "stroke-linecap":"round", opacity:.95}));
+      else if (seg.length === 1)                // 单点段：画个小圆点，不然什么都看不见
+        svg.appendChild(el("circle", {cx:x(b), cy:y(sp[b]), r:1.8, fill:rn.color}));
+      a = null;
+    };
+    fn.forEach((on,i) => {
+      if (on && a === null) a = i;
+      else if (!on && a !== null) flush(i - 1);
+    });
+    if (a !== null) flush(fn.length - 1);
+  }
+  if (rc) fc.forEach((on,i) => { if (on && sp[i] != null) {
+    // 深色底上纯黑不可见：外圈浅色光晕 + 内圈黑框
+    svg.appendChild(el("rect", {x:x(i)-s/2, y:y(sp[i])-s/2, width:s, height:s, rx:1,
+      fill:"none", stroke:"#C6D3E0", "stroke-width":3.4, opacity:.55}));
+    svg.appendChild(el("rect", {x:x(i)-s/2, y:y(sp[i])-s/2, width:s, height:s, rx:1,
+      fill:"none", stroke:"#05080C", "stroke-width":1.8, opacity:1}));
+  } });
+  const r = N2 > 1200 ? 2.2 : 3;
+  // 空心 = 需要打折的信号（熊市反弹的过热 / 宏观逆风里的恐慌），先画，实心盖在上面
+  const hollow = (f, ru) => { if (!ru) return; f.forEach((on,i) => { if (on && sp[i] != null)
+    svg.appendChild(el("circle", {cx:x(i), cy:y(sp[i]), r:r+.6, fill:"#0A0E14",
+      stroke:ru.color, "stroke-width":1.7, opacity:.95})); }); };
+  hollow(fhb, rhb); hollow(fls, rls);
+  if (rh) fh.forEach((on,i) => { if (on && sp[i] != null)
+    svg.appendChild(el("circle", {cx:x(i), cy:y(sp[i]), r:r, fill:rh.color, opacity:.95})); });
+  if (rlo) fl.forEach((on,i) => { if (on && sp[i] != null)
+    svg.appendChild(el("circle", {cx:x(i), cy:y(sp[i]), r:r, fill:rlo.color, opacity:.95})); });
+
+  // hover
+  const cross = el("line", {x1:0, x2:0, y1:m.t, y2:m.t+ih, stroke:"#8DA2B8",
+    "stroke-width":1, "stroke-dasharray":"3 3", opacity:0});
+  const hov = el("circle", {r:4.5, fill:"none", stroke:"#E3EAF2", "stroke-width":1.6, opacity:0});
+  svg.appendChild(cross); svg.appendChild(hov);
+  const tip = $("tip2"), Sl = S.slice(A);
+  svg.addEventListener("pointermove", ev => {
+    const bb = svg.getBoundingClientRect();
+    let i = Math.round(((ev.clientX - bb.left) / bb.width * W - m.l) / iw * (N2 - 1));
+    i = Math.max(0, Math.min(N2 - 1, i));
+    if (sp[i] == null) return;
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", .55);
+    hov.setAttribute("cx", x(i)); hov.setAttribute("cy", y(sp[i])); hov.setAttribute("opacity", 1);
+    const rg = regOf(Sl[i]);
+    const hit = [fh[i] && rh, fhb[i] && rhb, fl[i] && rlo, fls[i] && rls,
+                 fc[i] && rc, fn[i] && rn].filter(Boolean);
+    const vx = D.series.vix ? D.series.vix[A + i] : null;
+    tip.innerHTML = `<span style="color:#8DA2B8">${D2[i]}</span><br>` +
+      `QQQ ${sp[i].toFixed(2)}` + (vx != null ? `　VIX ${vx.toFixed(1)}` : "") + `<br>` +
+      `<span style="color:${rg.hex}">● </span>温度 ${Sl[i].toFixed(1)} · ${rg.name}` +
+      (FAST && FAST[A+i] != null ? `<br><span style="color:#56687D">快口径 ${FAST[A+i].toFixed(1)}（蓝点用）</span>` : "") +
+      (NSCORE && NSCORE[A+i] != null ? `<br><span style="color:#56687D">窄幅评分 ${NSCORE[A+i].toFixed(0)}</span>` : "") +
+      (hit.length ? "<br>" + hit.map(q => {
+        const g = q.mark === "box" ? "▢" : q.mark === "line" ? "▬" : (q.hollow ? "○" : "●");
+        return `<span style="color:${q.mark === "box" ? "#C6D3E0" : q.color}">${g} ${q.name}</span>`;
+      }).join("<br>") : "");
+    tip.style.opacity = 1;
+    const lft = x(i) / W * bb.width;
+    tip.style.left = Math.min(bb.width - 165, Math.max(0, lft + 12)) + "px";
+    tip.style.top = (y(sp[i]) / h * bb.height - 10) + "px";
+  });
+  svg.addEventListener("pointerleave", () => {
+    cross.setAttribute("opacity", 0); hov.setAttribute("opacity", 0); tip.style.opacity = 0;
+  });
+}
+
+/* 实际利率条：与纳指图同一时间轴，橙色底纹标出贴现率重估状态 */
+function drawRR(){
+  const RR = D.series.real_rate, M0 = D.macro;
+  const box = $("rrbox"), svg = $("cRR");
+  if (!RR || !M0) { box.style.display = "none"; return; }
+  box.style.display = "";
+  $("rrlvl").textContent = M0.level_th + "%";
+  $("rrrise").textContent = M0.rise_th + " 个百分点";
+  svg.innerHTML = "";
+  const A = RSTART, Bx = REND + 1, v = RR.slice(A, Bx), D2 = D.series.dates.slice(A, Bx), N2 = v.length;
+  const h = 118, m = {t:12, r:14, b:22, l:52};
+  svg.setAttribute("viewBox", `0 0 ${W} ${h}`);
+  svg.setAttribute("width", "100%"); svg.style.minWidth = "560px"; svg.style.height = "auto";
+  const iw = W - m.l - m.r, ih = h - m.t - m.b;
+  const ok = v.filter(z => z != null);
+  if (!ok.length) { box.style.display = "none"; return; }
+  const lo = Math.min(...ok, M0.level_th), hi = Math.max(...ok, M0.level_th), pad = (hi - lo) * .12 || .2;
+  const x = i => m.l + (N2 === 1 ? iw/2 : i / (N2 - 1) * iw);
+  const y = z => m.t + (1 - (z - lo + pad) / (hi - lo + 2*pad)) * ih;
+
+  // 重估状态底纹：与空心蓝点同源——直接由 flags 反推会漏掉没有蓝点的日子，
+  // 故用页面自己按同一规则（含滞回）重算的状态序列。
+  const st = [];
+  let on = false;
+  for (let i = 0; i < RR.length; i++){
+    const z = RR[i], z6 = i >= M0.win ? RR[i - M0.win] : null;
+    if (z != null && z6 != null){
+      const c = z - z6;
+      if (on) { if (z >= M0.level_th || c < -M0.rise_th) on = false; }
+      else if (z < M0.level_th && c > M0.rise_th) on = true;
+    }
+    st.push(on);
+  }
+  let a = null;
+  const flush = b => { if (a === null) return;
+    svg.appendChild(el("rect", {x:x(a), y:m.t, width:Math.max(1.2, x(b)-x(a)), height:ih,
+      fill:"#D19A3E", opacity:.16})); a = null; };
+  st.slice(A, Bx).forEach((z,i) => { if (z && a === null) a = i; else if (!z && a !== null) flush(i-1); });
+  if (a !== null) flush(N2 - 1);
+
+  [lo, M0.level_th, hi].forEach((z,k) => {
+    svg.appendChild(el("line", {x1:m.l, x2:m.l+iw, y1:y(z), y2:y(z),
+      stroke: k === 1 ? "#D19A3E" : "#2A3B4F", "stroke-width": k === 1 ? 1 : .6,
+      "stroke-dasharray": k === 1 ? "4 3" : "", opacity:.6}));
+    const t = el("text", {x:m.l-7, y:y(z)+3.5, "text-anchor":"end",
+      fill: k === 1 ? "#D19A3E" : "#56687D", "font-size":10, "font-family":"IBM Plex Mono, monospace"});
+    t.textContent = z.toFixed(1); svg.appendChild(t);
+  });
+  const longSpan = N2 > 400;
+  axisDates(D2, longSpan ? 9 : 7).forEach((i,k,arr) => {
+    const t = el("text", {x:x(i), y:h-6,
+      "text-anchor": k === 0 ? "start" : k === arr.length-1 ? "end" : "middle",
+      fill:"#56687D", "font-size":10, "font-family":"IBM Plex Mono, monospace"});
+    t.textContent = longSpan ? D2[i].slice(0,7) : fmtDate(D2[i]); svg.appendChild(t);
+  });
+  svg.appendChild(el("polyline", {points: v.map((z,i) => z == null ? null :
+      `${x(i).toFixed(2)},${y(z).toFixed(2)}`).filter(Boolean).join(" "),
+    fill:"none", stroke:"#8FA6BD", "stroke-width": N2 > 1200 ? 1.1 : 1.6, "stroke-linejoin":"round"}));
+}
+
+/* 预警图例：说明 + 触发次数 + 最近一次 */
+function segments(f){
+  const out = []; let st = -1;
+  f.forEach((v,i) => { if (v && st < 0) st = i; else if (!v && st >= 0) { out.push([st, i-1]); st = -1; } });
+  if (st >= 0) out.push([st, f.length-1]);
+  return out;
+}
+/* 当前宏观状态：决定蓝点是实心还是空心、红点门槛是 80 还是 60 */
+(() => {
+  const M = D.macro, BR = D.bear, bits = [];
+  if (M) bits.push(`10年期实际利率 <b>${M.real_rate == null ? "—" : M.real_rate.toFixed(2) + "%"}</b>`
+    + (M.chg == null ? "" : `（6个月 ${M.chg >= 0 ? "+" : ""}${M.chg.toFixed(2)}pp）`)
+    + ` · ${M.repricing ? "<b style=\"color:#D19A3E\">处于贴现率重估状态，蓝点降级为空心</b>"
+                        : "不处于贴现率重估状态，蓝点按实心计"}`);
+  if (BR) bits.push(BR.now ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下，过热门槛临时降至 ${BR.th}</b>`
+                          : `纳指未跌破下行的 ${BR.ma} 日均线，过热门槛为 ${B[3]}`);
+  $("macrobar").innerHTML = bits.length ? "当前宏观状态：" + bits.join("　|　") : "";
+})();
+
+$("alegend").innerHTML = AL.rules.map(r => {
+  const f = AL.flags[r.key] || [], segs = segments(f), last = segs[segs.length-1];
+  const cls = r.mark === "box" ? "mk box" : r.mark === "line" ? "mk line"
+            : r.hollow ? "mk hollow" : "mk";
+  const sty = r.mark === "box"
+    ? `border-color:#05080C;box-shadow:0 0 0 1.5px rgba(198,211,224,.55);background:#05080C`
+    : r.hollow ? `border-color:${r.color}` : `background:${r.color}`;
+  return `<div class="acard">
+    <b><span class="${cls}" style="${sty}"></span>${r.name}</b>
+    <em>${r.desc}</em>
+    <u>${AL.counts[r.key] || 0} 个交易日 · ${segs.length} 段${
+      last ? `<br>最近 ${D.series.dates[last[0]]}${last[1] > last[0] ? " → " + D.series.dates[last[1]] : ""}` : ""}</u>
+  </div>`;
+}).join("");
+
+/* ---- legend ---- */
+$("legend").innerHTML = R.map((r, i) =>
+  `<span><i class="sw" style="background:${r.hex};opacity:.45"></i>${r.name} ${i===0?0:B[i-1]}–${i===R.length-1?100:B[i]}</span>`
+).join("");
+
+/* ---- indicator rows ---- */
+function spark(raw, hex){
+  const w = 150, h = 26;
+  const step = Math.max(1, Math.ceil(raw.length / 160));
+  const series = raw.filter((_, i) => i % step === 0 || i === raw.length - 1);
+  const v = series.filter(x => x != null);
+  if (!v.length) return "";
+  const n = series.length;
+  const px = i => i / (n - 1) * w;
+  const py = x => h - 2 - (x / 100) * (h - 4);
+  const pts = series.map((x,i) => x == null ? null : `${px(i).toFixed(1)},${py(x).toFixed(1)}`).filter(Boolean).join(" ");
+  const last = series[n-1];
+  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" style="overflow:visible" aria-hidden="true">
+    <line x1="0" x2="${w}" y1="${py(50)}" y2="${py(50)}" stroke="#2A3B4F" stroke-width=".6" opacity=".7"/>
+    <polyline points="${pts}" fill="none" stroke="${hex}" stroke-width="1.4" stroke-linejoin="round"/>
+    <circle cx="${px(n-1)}" cy="${py(last)}" r="2.6" fill="${hex}"/></svg>`;
+}
+const median = a => { const s = a.filter(x => x != null).slice().sort((p,q) => p-q);
+  return s.length ? s[Math.floor(s.length/2)] : null; };
+function fmtRaw(it){
+  const v = it.raw;
+  if (v == null) return "—";
+  if (it.key === "erp") return v.toFixed(2) + "%";
+  if (it.key === "turnover"){
+    const m = median(it.raw_series);
+    return m ? (v / m * 100).toFixed(0) : v.toFixed(0);
+  }
+  return v.toFixed(1) + "%";
+}
+const RAWLABEL = {turnover:"指数 100=中位", top2:"当日占比", advancing:"占比",
+                  ma20:"当日占比", leverage:"占比", erp:"当日 E/P − 10Y"};
+/* 平滑分项：主数值是进入分位计算的平滑值，副标注明窗口并并列当日未平滑值，
+   避免把"10日均 48.7%"误读成"9月3日当天只有 48.7% 的股票上涨"。 */
+function rawSub(it){
+  const base = RAWLABEL[it.key] || "";
+  if (!it.smooth) return base;
+  const today = it.raw_today == null ? null
+    : (it.key === "turnover"
+        ? (median(it.raw_series) ? (it.raw_today / median(it.raw_series) * 100).toFixed(0) : null)
+        : it.raw_today.toFixed(1) + "%");
+  return `${it.smooth}${today ? `　当日 ${today}` : ""}`;
+}
+$("rows").innerHTML = D.indicators.map(it => {
+  const r = regOf(it.pct);
+  return `<div class="row">
+    <div class="r-nm"><b>${it.name}${it.inverted ? '<span class="inv">已反向</span>' : ""}${it.signed ? '<span class="inv" style="color:var(--r2);border-color:var(--r2)">方向修正</span>' : ""}</b><em>${it.desc}</em></div>
+    <div class="r-rw">${fmtRaw(it)}<u>${rawSub(it)}</u></div>
+    <div class="r-bar">
+      <div class="pbar"><i style="width:${it.pct}%;background:${r.hex}"></i></div>
+      <div class="pticks">${[20,40,60,80].map(t => `<u style="left:${t}%"></u>`).join("")}</div>
+    </div>
+    <div class="r-pc" style="color:${r.hex}">${it.pct.toFixed(0)}<s>${it.signed ? `分位 · 未修正 ${it.pct_unsigned.toFixed(0)}` : "分位"}</s></div>
+  </div>`;
+}).join("");
+
+/* sparkline row appended under each bar */
+document.querySelectorAll(".row").forEach((row, i) => {
+  const it = D.indicators[i], r = regOf(it.pct);
+  const holder = document.createElement("div");
+  holder.style.cssText = "margin-top:6px";
+  holder.innerHTML = spark(it.pct_series, r.hex);
+  row.querySelector(".r-bar").appendChild(holder);
+});
+
+/* ---- method / limits ---- */
+$("methods").innerHTML = D.indicators.map(it =>
+  `<p><span style="color:var(--ink)">${it.name}</span> — ${it.method}</p>`).join("");
+
+$("foot").innerHTML = `数据源：stockanalysis.com（${D.coverage.stocks} 只成分股 + ${D.coverage.sector_etfs} 个行业ETF 的 10 年日线，已做拆股/分红复权）、` +
+  `Wikipedia（成分股名单与 GICS 行业）、Alpha Vantage（10 年期美债日频收益率）、multpl.com（标普500 TTM 每股收益）。` +
+  `生成于 ${D.generated_at}（UTC）。` +
+  `<br>本页仅为市场情绪的量化观察工具，不构成任何投资建议。`;
+
+
+const LIMITS = [
+  ["方向修正引入了价格信息", "换手率对恐慌和狂热同样敏感。2020 疫情底原始读数 30.9（偏冷），加入方向系数后为 14.6（极度恐慌），代价是六项里有一项不再纯粹是\"情绪存量\"，而含有 20 日价格动量。这让温度计与趋势的相关性上升——把它当逆向指标用时要意识到这一点。原始口径的数值在上表中并列，可直接对比。"],
+  ["方向修正救不了 2022 熊市底", "2022-10-12 修正后仍读 31.6（偏冷），未到恐慌。慢熊的 20 日动量本就不极端，方向系数接近 0；真正的原因见下一条。急跌型崩盘（2018Q4、2020、2025）修正有效，阴跌型熊市仍会低估恐慌。"],
+  ["2022 年蓝点会连着叫，且都在半山腰——这是补丁，不是解决", "把九年的蓝点按事件聚类：<b>非2022的4次，触发后3个月平均 +24.6%、4战全胜</b>；<b>2022的5次，平均 −2.2%、胜率40%</b>，其中1/25、2/28、4/29三次分别是 −8.0%、−10.8%、+0.8%（6个月 −10.8%、−11.9%、−9.9%）。若照着「蓝点买入、红点减仓」执行，2022 全年会一路加仓、且因为熊市里温度顶不到80而<b>全年零红点、没有任何减仓信号</b>。<br><br>先排除一个常见的归因：这不全是「252日窗口」的锅。把六项全换成扩张窗口重算，2022 蓝点确实从17天降到5天，但<b>2020年3月的9个蓝点也一起归零</b>（十年最好的一次买点），红点九年只剩1个——参照系换了，病没治好，眼睛先瞎了。<br><br>真正的病因是结构性的：情绪指标衡量的是「相对最近有多害怕」，它能标出<em style=\"font-style:normal;color:var(--ink)\">冲击式</em>下跌的底（跌得快、几周跌完、恐慌本身就是最后一跌），但对<em style=\"font-style:normal;color:var(--ink)\">贴现率重估式</em>下跌无能为力——2022 跌的原因在分母不在分子，情绪再低，只要实际利率还在往上走，估值就还要压。<br><br>于是加了两条外部约束（都不改温度本身）：<br>① <b>空心蓝点</b>：10年期TIPS实际利率 &lt; 0.5% 且6个月上行 &gt; 0.25个百分点时（带滞回，见 <code>engine.py</code> 注释），蓝点降级为空心＝分批而非满仓。实测把 2022 的蓝点精确劈成两半——13个空心日后续3个月 <b>−4.7%、胜率23%</b>，23个实心日 <b>+26.7%、胜率96%</b>。<br>② <b>熊市反弹预警（空心红点）</b>：跌破下行的200日均线时把过热门槛从80降到60、连续3日。九年只触发15天/4段，全部在 2022-06 至 2023-01，触发后3个月平均 <b>−11.3%、87%为负</b>（对照：标准红点 +3.2%、34%为负），补上了 2022 年 6 月和 8 月两个反弹高点。<br><br><b>要打足的折扣</b>：这两条都是拿同一段历史反过来调出来的。实际利率那条判别的宏观状态在样本里<b>只出现过一次</b>（2021下半年–2022），等于零样本外验证；熊市反弹那条的4段样本也全部落在同一年。阈值的稳健性做过检查（上行0.0–0.25 × 水平0.0–0.5 的整片区间结论一致，不是卡在边缘），经济含义也自洽，但下一次的宏观冲击未必长这个样子。也正因为如此，空心蓝点<em style=\"font-style:normal;color:var(--ink)\">不屏蔽</em>信号、只降级——宁可留着让你自己判断。<br><br>试过但没用的：蓝点后等站上20日均线再买（3个月 +9.7% → +6.8%，更差）；要求实际利率6个月不上行（把2018-12、2022-06、2022-09、2025-04、2026-03 全误杀）；要求回撤&gt;20% 或 VIX≥35（把2020-03、2025-04、2026-03 误杀）。"],
+  ["滚动分位是相对的，2022 年只修好了一半", "252 日窗口意味着一切只跟<b>过去一年</b>比。原口径下 2022-10-12 温度 31.6，ERP 反向分位读到 94.2（＝极贵）—— 因为那年 10Y 从约 1.6% 升到约 4%，ERP 被单边压缩，2.29% 已是 252 日窗口 [2.10, 4.12] 的第 5.6 百分位，但放到 10 年尺度只是第 44 百分位。<br><br>改用 ERP／E-P 各半的口径后，ERP 分位降到 48.4，温度 31.6 → <b>23.9（偏冷）</b>；2022-06-16 的中继低点更是从中性降到 <b>17.3（极度恐慌）</b>。但 10 月那个真正的底仍差一步没进恐慌区。<br><br>剩下的缺口来自宽度指标的同一个毛病：熊市已跌十个月，前 252 日里本就充斥低值（上涨占比窗口均值 49.9%、最低 23.3%），当日 39.0% 虽低却不算窗口内极端。对比 2020 疫情底，站上MA20 当日 1.5% 而窗口均值 57.4%，急跌时窗口仍保留崩盘前的好读数，分位才能砸到 1.0。<br><br><b>这套方法对急跌型崩盘灵敏，对阴跌型熊市迟钝</b>——跌得够久，坏就变成了新常态。"],
+  ["修正极值标定要付出排序的代价", "改善 2022 读数与提升预测力是一对矛盾，实测出一条取舍前沿：原口径秩相关 −0.126、2022底 31.5；ERP／E-P 各半 −0.099、23.9；纯 E/P −0.071、16.3（且五档收益失去单调）。更长窗口（504/756日）和\"利率状态内条件分位\"都试过，前者修不动 2022，后者反而把它推高到 43。<br><br>当前取中间方案：用 21% 的秩相关换 2022 底部进入偏冷区间下沿。想切回纯粹判别力最强的原口径，把 <code>engine.py</code> 里的 <code>ERP_MODE</code> 改成 <code>\"erp\"</code> 即可。"],
+  ["成分股名单存在幸存者偏差", "用的是<b>当前</b>标普500的 503 只成分股回溯 10 年。期间被剔除的公司（破产、被并购、跌出指数）不在样本里，因此历史时段的宽度读数会略微偏高——当年真实的下跌家数比这里算出来的更多。这是用现成名单做历史回溯的固有代价，要消除需要逐月的历史成分股名单。"],
+  ["新纳入成分股历史较短", "近年才进入指数的公司只有上市以来的数据（最短的仅 55 个交易日）。宽度指标的分母按当日有效样本数动态计算，不会因此失真，但早期年份的实际样本数少于 503。"],
+  ["滚动分位的参照系自己在晃：2023年是这个毛病的样本", "实测各分项「252日窗口均值摆幅 ÷ 自身标准差」：杠杆多空比 <b>3.50</b>、ERP 2.64、TOP2 2.60、换手率 1.85——尺子比被测物晃得还厉害；只有上涨占比 0.90、站上MA20 0.83 是平稳的。<br><br>后果很直观：红点天数按年份分布是 <b>2023年21天（全样本最多）、2021年0天</b>。2021是成长股泡沫的顶点，这个温度计说它从没热过；2023只是熊市后的正常修复，却被读成十年最热——因为2023的参照窗口里装的全是2022熊市。举个具体的：2023-06-14 杠杆多空比原始值66.03，对比过去252天是 <b>99.6分位</b>，对比完整十年只有 <b>21.2分位</b>，同一个数字差了78个分位点。<br><br>试过修：宽度指标改用固定锚点绝对映射、换手率/TOP2/杠杆改用扩张窗口分位。确实修好了——2023红点归零，秩相关 −0.114 → −0.176，五区间占比回到 4/17/39/34/6。<b>但红点的判别力同时消失了</b>：触发后纳指+3个月 +5.56%，基准 +5.22%，且71天里52天挤在2020年（扩张窗口永不遗忘，早年极值把后来的门槛永久抬高）。长滚动窗口同样救不回来（504日+5.25%、756日+5.20%、1008日+6.89%）。<br><br>结论是个不太舒服的事实：<b>跟过去一年比，在描述市场绝对状态上是荒谬的，但在预测未来三个月上反而更有用</b>——决定短期均值回归的本就是「相对最近这个regime有多绷」。所以最终保留252日口径，代价是跨年度的温度<em style=\"font-style:normal;color:var(--ink)\">不可直接比较</em>：2023年的80分和2021年的80分不是一回事，看的时候要带着这个前提。"],
+  ["融资指标是杠杆多空比，不是融资额", "美股没有日频融资买入额：FINRA 只公布月频融资余额、滞后数周，且其官网对本环境返回 403。此处改用<b>杠杆ETF的多空成交额之比</b>——10 只做多（纳指/标普/小盘/半导体/金融/道指）对 5 只做空。崩盘时做空杠杆ETF成交额激增、比值塌陷，方向内生在指标里。代价是它衡量的是<em style=\"font-style:normal;color:var(--ink)\">杠杆资金的方向偏好</em>，不是融资规模；且杠杆ETF以散户和短线资金为主，机构的真实融资杠杆看不到。"],
+  ["换手率为等份额近似", "缺少逐日股本数据，用「篮子成交额 ÷ 篮子价格和」近似，已剔除大盘价格水平对成交额的机械抬升；但回购导致的股本缓慢变化未体现。"],
+  ["ERP 输入含月频成分", "标普500 TTM 每股收益为月频（multpl.com），前向填充到日频；10 年期美债为日频。指数用 SPY 收盘价 ×10 换算。"],
+  ["方向修正只改善极值标定，不改善排序", "换手率仍需外部方向系数（杠杆指标改用多空比后已自带方向）。实测：加与不加，温度与未来3个月收益的秩相关都是 −0.126；但崩盘时点的标定差别很大（2020 疫情底 30.9 偏冷 → 14.6 极度恐慌）。也就是说方向修正让温度计在极端处<em style=\"font-style:normal;color:var(--ink)\">叫得准</em>，但没让它<em style=\"font-style:normal;color:var(--ink)\">排得更准</em>。"]
+];
+$("limits").innerHTML = LIMITS.map(([t, b]) =>
+  `<p><span style="color:var(--ink)">${t}</span> — ${b}</p>`).join("");
+
+$("rbtns").innerHTML = RANGES.map(([n,lab]) =>
+  `<button type="button" data-n="${n}">${lab}</button>`).join("");
+
+/* ---- 自定义时间滑槽（双滑块，选定任意区间） ---- */
+const MINGAP = 20;   // 最短可选区间（交易日）
+const rmin = $("rmin"), rmax = $("rmax"), rfill = $("rfill");
+rmin.min = rmax.min = 0; rmin.max = rmax.max = N - 1;
+
+function syncPresetButtons(){
+  const isAll = RSTART === 0 && REND === N - 1;
+  [...$("rbtns").children].forEach(b => {
+    const n = +b.dataset.n;
+    const on = n >= 99999 ? isAll : (RSTART === N - n && REND === N - 1);
+    b.setAttribute("aria-pressed", on);
+  });
+}
+function syncSliderUI(){
+  rmin.value = RSTART; rmax.value = REND;
+  const l = RSTART / (N - 1) * 100, r = REND / (N - 1) * 100;
+  rfill.style.left = l + "%"; rfill.style.width = Math.max(0, r - l) + "%";
+  $("rlabels").innerHTML = `<b>${D.series.dates[RSTART]}</b> – <b>${D.series.dates[REND]}</b>`;
+  syncPresetButtons();
+}
+function setRange(a, b, redraw){
+  RSTART = Math.max(0, Math.min(a, b));
+  REND = Math.min(N - 1, Math.max(a, b));
+  syncSliderUI();
+  $("hist-sub").textContent = subText();
+  $("ndx-sub").textContent = ndxSub();
+  if (redraw !== false){ drawTemp(); drawNdx(); drawRR(); }
+}
+$("rbtns").addEventListener("click", ev => {
+  const b = ev.target.closest("button"); if (!b) return;
+  const n = +b.dataset.n;
+  setRange(n >= 99999 ? 0 : N - n, N - 1);
+});
+let dragRAF = null;
+function onDrag(){
+  if (dragRAF) return;
+  dragRAF = requestAnimationFrame(() => { dragRAF = null;
+    let a = +rmin.value, b = +rmax.value;
+    if (b - a < MINGAP){
+      if (document.activeElement === rmin) a = Math.max(0, b - MINGAP);
+      else b = Math.min(N - 1, a + MINGAP);
+      rmin.value = a; rmax.value = b;
+    }
+    setRange(a, b);
+  });
+}
+rmin.addEventListener("input", onDrag);
+rmax.addEventListener("input", onDrag);
+
+function subText(){
+  const A = RSTART;
+  return `${D.series.dates[A]} 至 ${D.series.dates[REND]}，共 ${REND - A + 1} 个交易日。背景色带对应五个情绪区间。` +
+         (REND < N - 1 || RSTART > 0 ? `　可拖动上方滑槽自定义区间。` : ``);
+}
+function ndxSub(){
+  const A = RSTART;
+  return `${D.ndx_label || "纳斯达克100"} 收盘价，叠加同期三类情绪预警的触发点位。` +
+         `区间 ${D.series.dates[A]} 至 ${D.series.dates[REND]}。`;
+}
+setRange(RSTART, REND, false);
+
+drawTemp(); drawNdx(); drawRR();
+</script>
