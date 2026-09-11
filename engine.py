@@ -10,6 +10,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+import leverage as LV   # 杠杆温度：研报口径的多层杠杆监测（见 leverage.py 顶部注释）
+
 RAW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "raw")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
 
@@ -96,6 +98,10 @@ BANDS = [20.0, 40.0, 60.0, 80.0]
 # TOP2 + 杠杆 + 重仓窄幅 + 一个宽度项；ERP 一次都没进过前列，换手率大多缺席或垫底。
 # 敏感性：把任一权重 ±1（含把 MA20 或换手率整项删掉），触发后 +63日 都落在 -1.5% ~ -2.5%、
 # 为负率 55%~65% 之间，没有一处是靠某个特定权重撑住的。
+# 【2026-09 更新】"leverage" 这一格喂进去的东西换了：从"杠杆多空比"单项换成 leverage.py 的
+# **杠杆温度**（多空比与杠杆ETF交易强度各半）。权重不变，仍是 2.0。换的原因与实测数字写在
+# compose_sell 的注释里——一句话版本：多空比在 2022 年之后秩相关翻正（+0.062），
+# 是这套减仓信号后段衰减的主要来源，补上交易强度后两段同号（-0.255 / -0.144）。
 SELL_W = {"top2": 2.0, "leverage": 2.0, "narrow": 3.0, "ma20": 1.0, "turnover": 1.0}
 SELL_TH = 75.0   # 红点门槛。扫描：>72 → 33段/-2.19%/61%为负；>75 → 26段/-1.79%/59%；
                  # >78 → 11段/-2.78%/65%。取 75：段数与现行红点相当的前提下质量最好。
@@ -372,15 +378,26 @@ def build_indicators():
             raw["_ndx_dd"] = dd
 
     # --- 5. 杠杆资金多空比 ---
-    # 美股无日频融资买入额（FINRA 仅月频余额且滞后数周）。此处用杠杆ETF的多空成交额之比：
+    # 美股无日频融资买入额（FINRA 只有月频余额且滞后数周——那条线现在作为可选的展示读数
+    # 接在 leverage.py 里，见 5b）。这里用杠杆ETF的多空成交额之比：
     # 崩盘时做空杠杆ETF成交额激增、比值塌陷；狂热时相反。方向内生，无需外部修正。
     longs, shorts = load_many(LEV_LONG), load_many(LEV_SHORT)
-    if longs and shorts:
-        dvl = pd.DataFrame({t: d["rawclose"] * d["volume"] for t, d in longs.items()}).reindex(idx).sum(axis=1, min_count=1)
-        dvs = pd.DataFrame({t: d["rawclose"] * d["volume"] for t, d in shorts.items()}).reindex(idx).sum(axis=1, min_count=1)
-        tot = (dvl + dvs).replace(0, np.nan)
-        raw["_leverage_daily"] = dvl / tot * 100
-        raw["leverage"] = (dvl / tot * 100).rolling(TO_SMOOTH, min_periods=1).mean()
+    # 多空比本身的计算已搬到 leverage.py（LV.letf_components）——它是杠杆温度的一条腿，
+    # 两处各算一遍必然会分叉。这里只负责取值与命名，口径与旧版逐日一致。
+    lev_frames = dict(longs)
+    lev_frames.update(shorts)
+    for t in tuple(LV.BASE_ETFS) + (LV.RP_FUND,) + tuple(LV.RP_BENCH):
+        if t not in lev_frames:
+            d = load(t)
+            if d is not None:
+                lev_frames[t] = d
+    spx_level = spy["close"].reindex(idx) * 10.0 if spy is not None else None
+    lv_raw, lv_meta, lv_notes = LV.build(idx, lev_frames, spx=spx_level, raw_dir=RAW)
+    lev_info = {"meta": lv_meta, "notes": lv_notes}
+
+    if "ratio" in lv_raw:
+        raw["_leverage_daily"] = lv_raw["ratio_daily"]
+        raw["leverage"] = lv_raw["ratio"]
         meta["leverage"] = (f"做多杠杆ETF成交额 / 杠杆ETF总成交额（{len(longs)}只做多、{len(shorts)}只做空，"
                             f"覆盖纳指/标普/小盘/半导体/金融/道指）")
     elif levs and (stocks or etfs):
@@ -392,6 +409,15 @@ def build_indicators():
             base = base.add(pd.DataFrame({t: d["rawclose"] * d["volume"] for t, d in etfs.items()}).reindex(idx).sum(axis=1, min_count=1), fill_value=0)
         raw["leverage"] = (ldv / base.replace(0, np.nan) * 100).rolling(TO_SMOOTH, min_periods=1).mean()
         meta["leverage"] = "杠杆ETF成交额 / 篮子总成交额（回退口径：缺做空杠杆ETF数据）"
+
+    # --- 5b. 杠杆温度的其余分项 ---
+    # 多空比只是研报杠杆框架里的一条腿，leverage.py 还按研报的分层口径算了三样：
+    # 杠杆ETF交易强度（散户）、风险平价隐含杠杆（机构，展示用）、保证金净借款（可选月频）。
+    # 一律以 `_lev_` 前缀存进 rawdf —— 下划线开头的列 compose() 会跳过，
+    # 所以六项综合温度、快口径温度、蓝点的标定一律不受影响（这是有意为之，见 main()）。
+    for k, v in lv_raw.items():
+        if k not in ("ratio", "ratio_daily"):
+            raw[f"_lev_{k}"] = v
 
     # --- 6. 风险溢价 ERP ---
     got = build_erp(idx, spy)
@@ -406,7 +432,7 @@ def build_indicators():
             "ep":    "标普500盈利收益率 E/P（不减利率，完全规避加息周期干扰）",
         }[ERP_MODE]
 
-    return pd.DataFrame(raw).reindex(idx), meta, spy
+    return pd.DataFrame(raw).reindex(idx), meta, spy, lev_info
 
 
 def load_real_rate(idx):
@@ -620,8 +646,10 @@ def _p(n):
 
 ALERTS = [
     {"key": "hot",   "name": "红点预警", "mark": "dot",  "color": "#CE5A4E", "persist": PERSIST,
-     "desc": f"减仓温度 > {SELL_TH:.0f}，{_p(PERSIST)}（减仓温度＝TOP2抱团×2、杠杆多空比×2、"
-             f"窄幅逼空×3、站上MA20×1、换手率×1 的加权分位，与页面展示的综合温度是两个数）"},
+     "desc": f"减仓温度 > {SELL_TH:.0f}，{_p(PERSIST)}（减仓温度＝TOP2抱团×2、杠杆温度×2、"
+             f"窄幅逼空×3、站上MA20×1、换手率×1 的加权分位，与页面展示的综合温度是两个数。"
+             f"杠杆那一格自 2026-09 起用「杠杆温度」＝多空比与杠杆ETF交易强度各半，"
+             f"不再是单看多空比——原因见 compose_sell 注释）"},
     {"key": "hot_bear", "name": "熊市反弹预警", "mark": "dot", "color": "#CE5A4E", "hollow": True,
      "persist": PERSIST,
      "desc": f"已跌破下行的 {BEAR_MA} 日均线（确认的下行趋势）且综合温度 > {BEAR_TH}，{_p(PERSIST)}。"
@@ -793,17 +821,39 @@ def compose(rawdf, dirseries=None, fast=False):
     return pct, adj, temp_raw, temp_adj
 
 
-def compose_sell(adj, rawdf):
+def compose_sell(adj, rawdf, lev_temp=None):
     """减仓温度：按 SELL_W 加权合成，只喂给红点预警，不作为页面展示的综合温度。
 
     分项取**方向修正后**的分位（与综合温度同源，保证两个数可比），窄幅评分取
     _narrow_neutral（下跌市填 50 的那一版）。任一分项缺失则当日不出减仓温度——
     与综合温度一样，宁可不出，也不用半套输入产出一个看似正常的读数。
     数据不足以合成时返回 None，调用方退回用综合温度，行为与旧版一致。
+
+    lev_temp: 杠杆温度（leverage.py 的两项合成分位）。给了就顶替 SELL_W["leverage"]
+    那一格，不给则退回原来的"杠杆多空比"单项，行为与旧版完全一致。
+
+    —— 为什么要换掉这一格 ——
+    杠杆多空比是现行减仓温度里衰减最狠的一项：它对未来 63 日 QQQ 的秩相关
+    2017-10~2021-12 是 -0.407，2022-01~2026-09 变成 **+0.062**（符号都反了）。
+    换成"多空比＋交易强度"的杠杆温度后是 -0.255 / -0.144，两段同号。
+    落到红点上（减仓温度>75 连3日，触发后 63 日 QQQ，基准 +5.18%/26%为负）：
+        现行（多空比）  81天/26段  +21日 -4.06%  +63日 -1.79%  59%为负
+                        前段 -5.40%(44天)   后段 **+2.49%**(37天)  ← README 里记的那个衰减
+        换成杠杆温度    64天/17段  +21日 -6.03%  +63日 -2.67%  67%为负
+                        前段 -4.63%(35天)   后段 **-0.31%**(29天)
+    门槛不是卡出来的：>70/-1.73%、>72/-2.85%、>75/-2.67%、>78/-2.46%、>80/-2.42%，
+    整段区间都比现行口径强，SELL_TH 维持 75 不动。
+    试过"新旧各半"（65天/22段、-3.15%、69%为负），全样本更漂亮但后段回到 +0.38%，
+    衰减没修掉——要修的就是后段，所以取整换不取折中。
     """
     parts, weights = [], []
     for c, w in SELL_W.items():
-        col = rawdf.get("_narrow_neutral") if c == "narrow" else adj.get(c)
+        if c == "narrow":
+            col = rawdf.get("_narrow_neutral")
+        elif c == "leverage" and lev_temp is not None:
+            col = lev_temp
+        else:
+            col = adj.get(c)
         if col is None:
             return None
         parts.append(col)
@@ -815,11 +865,108 @@ def compose_sell(adj, rawdf):
     return t.where(X.notna().all(axis=1))
 
 
+def leverage_monitor(rawdf):
+    """杠杆温度：把 leverage.py 产出的原始量转成分位并合成。
+
+    返回 (pct: DataFrame[ratio,intensity], temp: Series)。
+    分位一律走本模块的 rolling_pct / expanding_pct（由 LV.LEV_REF 选），
+    与页面其余分位共用同一把尺子——杠杆温度要与 TOP2、窄幅等项加权平均，尺子不同则不可加。
+    注意 ratio 这一腿直接取 rawdf["leverage"]，与"六个分项"里显示的杠杆多空比是同一个数，
+    不另算一遍。
+    """
+    pf = expanding_pct if LV.LEV_REF == "exp" else rolling_pct
+    cols = {}
+    if "leverage" in rawdf.columns:
+        cols["ratio"] = pf(rawdf["leverage"])
+    if "_lev_intensity" in rawdf.columns:
+        cols["intensity"] = pf(rawdf["_lev_intensity"])
+    pct = pd.DataFrame(cols, index=rawdf.index)
+    return pct, LV.temperature(pct)
+
+
+LEV_LABELS = {
+    "ratio":     ("杠杆资金多空比", "加杠杆的方向", "%", "做多占杠杆ETF总成交额"),
+    "intensity": ("杠杆ETF交易强度", "用杠杆包装交易的强度", "%", "占指数ETF成交额"),
+}
+LEV_GAUGES = {
+    "rp":     ("风险平价隐含杠杆", "机构 · 研报 Fig 6", "×", "倍"),
+    "margin": ("保证金净借款", "散户 · 研报 Fig 4", "", "十亿美元"),
+}
+
+
+def _ser(s, idx, nd=2):
+    return [None if not np.isfinite(v) else round(float(v), nd) for v in s.reindex(idx).values]
+
+
+def build_lev_block(rawdf, lev_pct, lev_temp, lev_info, idx):
+    """组装 data.json 里的 leverage_monitor 块（页面「杠杆温度」那一节的全部输入）。"""
+    meta, notes = lev_info["meta"], lev_info["notes"]
+    t = lev_temp.reindex(idx)
+    last_t = t.dropna()
+    block = {
+        "temperature": round(float(last_t.iloc[-1]), 1) if len(last_t) else None,
+        "regime": regime(float(last_t.iloc[-1])) if len(last_t) else None,
+        "as_of": last_t.index[-1].strftime("%Y-%m-%d") if len(last_t) else None,
+        "ref": ("扩张窗口" if LV.LEV_REF == "exp" else f"{WINDOW}日滚动"),
+        "weights": dict(LV.LEV_W),
+        "used_in_sell": "leverage" in SELL_W,
+        "smooth": LV.LEV_SMOOTH,
+        "components": [],
+        "gauges": [],
+        "notes": notes,
+        "series": {"temperature": _ser(t, idx, 1)},
+    }
+    src = {"ratio": rawdf.get("leverage"), "intensity": rawdf.get("_lev_intensity")}
+    for k in LV.LEV_W:
+        if k not in lev_pct.columns:
+            continue
+        name, desc, unit, rawlab = LEV_LABELS[k]
+        p, r = lev_pct[k].reindex(idx), src[k].reindex(idx)
+        block["components"].append({
+            "key": k, "name": name, "desc": desc, "unit": unit, "raw_label": rawlab,
+            "weight": LV.LEV_W[k],
+            "raw": round(float(r.dropna().iloc[-1]), 1) if r.notna().any() else None,
+            "pct": round(float(p.dropna().iloc[-1]), 1) if p.notna().any() else None,
+            "method": meta.get(k, ""),
+        })
+        block["series"][k + "_pct"] = _ser(p, idx, 1)
+
+    for k, (name, desc, unit, unit_label) in LEV_GAUGES.items():
+        col = rawdf.get(f"_lev_{k}")
+        if col is None:
+            continue
+        s = col.reindex(idx)
+        v = s.dropna()
+        if not len(v):
+            notes[k] = notes.get(k, "序列为空")
+            continue
+        # 分位可能要算在另一条序列上（保证金：算在「净借款 ÷ 指数点位」上，
+        # 否则指数涨一倍、净借款按比例涨，分位会误判成"杠杆创新高"）
+        pv = rawdf.get(f"_lev_{k}_ratio")
+        p = rolling_pct((pv if pv is not None else col).reindex(idx))
+        peak_i = v.idxmax()
+        block["gauges"].append({
+            "key": k, "name": name, "desc": desc, "unit": unit, "unit_label": unit_label,
+            "value": round(float(v.iloc[-1]), 3),
+            "as_of": v.index[-1].strftime("%Y-%m-%d"),
+            "pct": (round(float(p.reindex([v.index[-1]]).iloc[0]), 1)
+                    if np.isfinite(p.reindex([v.index[-1]]).iloc[0]) else None),
+            "peak": {"date": peak_i.strftime("%Y-%m-%d"), "value": round(float(v.loc[peak_i]), 3)},
+            "from_peak": round(float(v.iloc[-1] / v.loc[peak_i] - 1.0) * 100, 1),
+            "chg_1y": (round(float(v.iloc[-1] / v.iloc[-253] - 1.0) * 100, 1) if len(v) > 253 else None),
+            "start": v.index[0].strftime("%Y-%m-%d"),
+            "method": meta.get(k, ""),
+        })
+        block["series"][k] = _ser(s, idx, 3)
+    return block
+
+
 def main():
-    rawdf, meta, spy = build_indicators()
+    rawdf, meta, spy, lev_info = build_indicators()
     dirs = direction(spy, rawdf.index)
     pct, adj, temp_raw, temp_adj = compose(rawdf, dirs)
-    temp_sell = compose_sell(adj, rawdf)
+    lev_pct, lev_temp = leverage_monitor(rawdf)
+    temp_sell = compose_sell(adj, rawdf, lev_temp=lev_temp)
     have = temp_adj.dropna()
     if len(have) == 0:
         raise SystemExit("温度序列为空")
@@ -950,6 +1097,9 @@ def main():
                      "flags": {k: [bool(x) for x in v.values] for k, v in al.items()},
                      "counts": {k: int(v.sum()) for k, v in al.items()}}
 
+    # ---------- 杠杆温度（研报口径的多层杠杆监测，见 leverage.py）----------
+    out["leverage_monitor"] = build_lev_block(rawdf, lev_pct, lev_temp, lev_info, have.index)
+
     for c in cols:
         name, desc = LABELS[c]
         d_ = {
@@ -982,6 +1132,15 @@ def main():
               + " ".join(f"{k}x{v:g}" for k, v in SELL_W.items()) + "）"
               + (f"  快口径温度 {out['temperature_fast']}（蓝点门槛 {COLD_TH:.0f} 且 VIX≥{VIX_COLD}）"
                  if out.get("temperature_fast") is not None else ""))
+    lm = out.get("leverage_monitor") or {}
+    if lm.get("temperature") is not None:
+        print(f"杠杆温度 {lm['temperature']}（{lm['regime']}，"
+              + "＋".join(f"{c['name']}{c['pct']}" for c in lm["components"]) + f"，{lm['ref']}分位）")
+    for g in lm.get("gauges", []):
+        print(f"  {g['name']} {g['value']:g}{g['unit'] or ' ' + g['unit_label']}（{g['as_of']}，分位 {g['pct']}，"
+              f"峰值 {g['peak']['value']:g} 于 {g['peak']['date']}，较峰值 {g['from_peak']:+.1f}%）")
+    for k, why in (lm.get("notes") or {}).items():
+        print(f"  ⓘ 杠杆分项 {k} 缺席：{why}")
     print(f"样本 {out['coverage']['stocks']} 成分股 / {out['coverage']['sectors']} 行业，历史 {out['coverage']['history_days']} 交易日，温度序列 {len(have)} 点")
     for i in out["indicators"]:
         tag = " [方向修正]" if i["signed"] else (" [已反向]" if i["inverted"] else "")

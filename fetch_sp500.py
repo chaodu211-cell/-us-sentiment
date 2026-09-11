@@ -37,8 +37,12 @@ GICS_CN = {
 # 少拉任何一只，该分项就会用陈旧数据继续算，且平滑窗口会把缺口悄悄补上。
 LEV_LONG  = ["TQQQ", "UPRO", "SPXL", "SSO", "QLD", "TNA", "SOXL", "FAS", "TECL", "UDOW"]
 LEV_SHORT = ["SQQQ", "SPXS", "SDS", "TZA", "SOXS"]
+# 风险平价隐含杠杆（leverage.py，研报 Fig6 口径）：RPAR 与它的无杠杆基准腿。
+# 这五只**只喂那一个展示用读数**，不进任何温度——少拉或拉失败只会让页面上那一行消失，
+# 不影响综合温度、减仓温度与所有预警。
+RISK_PARITY = ["RPAR", "TIP", "TLT", "GLD", "DBC"]
 ETFS = (["XLK", "XLC", "XLY", "XLF", "XLV", "XLI", "XLP", "XLE", "XLU", "XLRE", "XLB",
-         "SPY", "QQQ"] + LEV_LONG + LEV_SHORT)
+         "SPY", "QQQ"] + LEV_LONG + LEV_SHORT + RISK_PARITY)
 
 CTX = ssl.create_default_context()
 _lock = threading.Lock()

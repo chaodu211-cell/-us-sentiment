@@ -159,6 +159,12 @@ table.ext tr:last-child td{border-bottom:none}
 table.ext .d{font-family:var(--mono);color:var(--ink3);font-size:11.5px;white-space:nowrap}
 table.ext .v{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;font-size:15px}
 table.ext .r{white-space:nowrap;font-size:12.5px}
+.levhead{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;
+  margin:14px 0 18px;padding-right:4px}
+.levbig{display:flex;align-items:baseline;gap:12px}
+.levbig b{font-family:var(--mono);font-size:46px;font-weight:300;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1}
+.levbig span{font-size:13px;letter-spacing:.06em}
+.levbig em{font-style:normal;font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
 #tip{position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;background:#0d141d;
      border:1px solid var(--border-2);border-radius:3px;padding:8px 11px;font-family:var(--mono);
      font-size:11.5px;line-height:1.6;white-space:nowrap;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.55)}
@@ -224,6 +230,24 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
     <h2>六个分项</h2>
     <p class="sub">每项先算过去 252 个交易日的滚动分位，再等权平均。分位越高＝该维度越"热"。迷你图为该项分位的历史走势，中线为 50 分位。</p>
     <div class="rows" id="rows"></div>
+  </section>
+
+  <section id="levsec" style="display:none">
+    <h2>杠杆温度</h2>
+    <p class="sub" id="lev-sub"></p>
+    <div class="levhead">
+      <div class="levbig"><b id="levtemp">--</b><span id="levregime"></span><em id="levdelta"></em></div>
+      <div id="levspark"></div>
+    </div>
+    <div class="rows" id="levrows"></div>
+    <div class="grid2" style="margin-top:16px">
+      <div class="card">
+        <h3>另外两把尺：只描述，不进温度</h3>
+        <table class="ext" id="levgauges"></table>
+        <p class="sub" id="levnotes" style="margin:10px 0 0"></p>
+      </div>
+      <div class="card"><h3>为什么按研报重做这一项</h3><div id="levwhy"></div></div>
+    </div>
   </section>
 
   <section>
@@ -737,11 +761,78 @@ document.querySelectorAll(".row").forEach((row, i) => {
   row.querySelector(".r-bar").appendChild(holder);
 });
 
+/* ---- 杠杆温度（leverage.py，研报口径的分层杠杆监测）---- */
+const LM = D.leverage_monitor || null;
+if (LM && LM.temperature != null){
+  const r = regOf(LM.temperature);
+  $("levtemp").textContent = LM.temperature.toFixed(0);
+  $("levtemp").style.color = r.hex;
+  $("levregime").textContent = LM.regime;
+  $("levregime").style.color = r.hex;
+  const LS = LM.series.temperature || [], n = LS.length;
+  const back = k => { for (let i = n-1-k; i >= 0; i--) if (LS[i] != null) return LS[i]; return null; };
+  const d20 = n > 21 ? back(21) : null;
+  $("levdelta").textContent = (d20 == null ? "" : `20个交易日前 ${d20.toFixed(0)}（${(LM.temperature-d20>=0?"+":"")}${(LM.temperature-d20).toFixed(0)}）`)
+    + `　截至 ${LM.as_of}`;
+  $("levspark").innerHTML = spark(LS, r.hex);
+  $("lev-sub").innerHTML =
+    `按 J.P. Morgan《Flows &amp; Liquidity: Has investors leveraged peaked?》(2026-06-24) 的分层口径重建：` +
+    `研报把杠杆按持有人拆开量，这里保留了免费日频可得的两条腿——加杠杆的<b>方向</b>与用杠杆包装交易的<b>强度</b>——` +
+    `各 ${(100/Object.keys(LM.weights).length).toFixed(0)}% 权重，先各自取 ${LM.ref}分位再合成。` +
+    `这个温度已接进<b>减仓温度</b>（红点）里那一格杠杆权重，代替原来单看多空比的做法。`;
+  $("levrows").innerHTML = LM.components.map(c => {
+    const rr = regOf(c.pct == null ? 50 : c.pct);
+    return `<div class="row">
+      <div class="r-nm"><b>${c.name}</b><em>${c.desc}</em></div>
+      <div class="r-rw">${c.raw == null ? "—" : c.raw.toFixed(1) + (c.unit||"")}<u>${c.raw_label}　${LM.smooth}日均</u></div>
+      <div class="r-bar">
+        <div class="pbar"><i style="width:${c.pct||0}%;background:${rr.hex}"></i></div>
+        <div class="pticks">${[20,40,60,80].map(t => `<u style="left:${t}%"></u>`).join("")}</div>
+        <div style="margin-top:6px">${spark(LM.series[c.key + "_pct"] || [], rr.hex)}</div>
+      </div>
+      <div class="r-pc" style="color:${rr.hex}">${c.pct == null ? "—" : c.pct.toFixed(0)}<s>分位 · 权重 ${c.weight}</s></div>
+    </div>`;
+  }).join("");
+
+  const G = LM.gauges || [];
+  $("levgauges").innerHTML = G.length ? `<tr><th>读数</th><th>当前</th><th style="white-space:nowrap">分位</th><th>历史峰值</th><th>较峰值</th></tr>` +
+    G.map(g => `<tr>
+      <td><b>${g.name}</b><div class="d">${g.desc}　${g.start} 起</div></td>
+      <td class="v">${g.value.toLocaleString(undefined,{maximumFractionDigits:2})}${g.unit}<div class="d">${g.unit_label}</div></td>
+      <td class="v">${g.pct == null ? "—" : g.pct.toFixed(0)}</td>
+      <td class="v">${g.peak.value.toLocaleString(undefined,{maximumFractionDigits:2})}<div class="d">${g.peak.date}</div></td>
+      <td class="v" style="color:${g.from_peak <= -5 ? "var(--r1)" : "var(--ink2)"}">${g.from_peak > 0 ? "+" : ""}${g.from_peak.toFixed(1)}%</td>
+    </tr>`).join("")
+    : `<tr><td class="d">两把尺都没有数据。</td></tr>`;
+  const NOTE = {rp:"风险平价隐含杠杆", margin:"保证金净借款", ratio:"杠杆资金多空比", intensity:"杠杆ETF交易强度"};
+  const miss = Object.entries(LM.notes || {}).map(([k,v]) => `${NOTE[k]||k}：${v}`);
+  $("levnotes").innerHTML = (G.map(g => `<b>${g.name}</b> — ${g.method}`).join("<br>")) +
+    (miss.length ? `<br><span style="color:var(--r2)">缺席：${miss.join("；")}</span>` : "");
+
+  $("levwhy").innerHTML =
+    `<p><b>原来的问题</b>：杠杆那一项只看"做多杠杆ETF成交额占比"。它对未来 63 日纳指的秩相关，` +
+    `2017-10~2021-12 是 <b>−0.407</b>，2022-01~2026-09 变成 <b>+0.062</b>——符号都反了，` +
+    `是红点信号在样本后半段衰减的主要来源。病根在于它只量方向不量强度：2023-06-14 多空比原始 66.0%，` +
+    `对比过去一年读到 <b>99.8 分位</b>（"十年最热"），而同期真正挤进杠杆产品的钱少得可怜。</p>` +
+    `<p><b>补上的那条腿</b>：杠杆ETF总成交额 ÷ 指数ETF成交额，量的是"每 1 块钱指数交易背后有多少钱走杠杆包装"。` +
+    `同一天它的分位只有 <b>3.0</b>，两项合成后 51.4——2023 那个荒谬读数自己就没了；而 2021-11-19 泡沫顶两项都在 96 以上。` +
+    `两项等权后的秩相关是 <b>−0.255 / −0.144</b>，两段同号。</p>` +
+    `<p><b>接进红点后</b>（减仓温度 &gt; 75 连 3 日，触发后 63 日纳指，基准 +5.18%／26% 为负）：` +
+    `原口径 81天/26段 −1.79%／59% 为负，其中<b>后段 +2.49%</b>；新口径 64天/17段 <b>−2.67%／67% 为负</b>，` +
+    `后段 <b>−0.31%</b>。门槛 70/72/75/78/80 全段都优于原口径，不是卡在某个值上。</p>` +
+    `<p><b>研报那句"见顶回落是利空"没能验证</b>：把"63 日内峰值≥阈值、当前回落≥D、温度仍在高位"写成事件规则，` +
+    `扫了 12 组参数，触发后 63 日收益全部落在 +4.3%~+5.0%，而基准是 +5.18%——没有边际。` +
+    `反倒是<b>维持高位</b>有区分度。所以这里输出的是水平温度，不是拐点信号。</p>`;
+  $("levsec").style.display = "";
+}
+
 /* ---- method / limits ---- */
 $("methods").innerHTML = D.indicators.map(it =>
   `<p><span style="color:var(--ink)">${it.name}</span> — ${it.method}</p>`).join("");
 
-$("foot").innerHTML = `数据源：stockanalysis.com（${D.coverage.stocks} 只成分股 + ${D.coverage.sector_etfs} 个行业ETF 的 10 年日线，已做拆股/分红复权）、` +
+$("foot").innerHTML = `数据源：stockanalysis.com（${D.coverage.stocks} 只成分股 + ${D.coverage.sector_etfs} 个行业ETF + 15 只杠杆ETF` +
+  `${LM ? " + 风险平价ETF与其基准腿（RPAR/TIP/TLT/GLD/DBC）" : ""} 的 10 年日线，已做拆股/分红复权）、` +
+  `${LM && (LM.gauges||[]).some(g => g.key === "margin") ? "FINRA（月频保证金统计）、" : ""}` +
   `Wikipedia（成分股名单与 GICS 行业）、Alpha Vantage（10 年期美债日频收益率）、multpl.com（标普500 TTM 每股收益）。` +
   `生成于 ${D.generated_at}（UTC）。` +
   `<br>本页仅为市场情绪的量化观察工具，不构成任何投资建议。`;
@@ -761,6 +852,8 @@ const LIMITS = [
   ["融资指标是杠杆多空比，不是融资额", "美股没有日频融资买入额：FINRA 只公布月频融资余额、滞后数周，且其官网对本环境返回 403。此处改用<b>杠杆ETF的多空成交额之比</b>——10 只做多（纳指/标普/小盘/半导体/金融/道指）对 5 只做空。崩盘时做空杠杆ETF成交额激增、比值塌陷，方向内生在指标里。代价是它衡量的是<em style=\"font-style:normal;color:var(--ink)\">杠杆资金的方向偏好</em>，不是融资规模；且杠杆ETF以散户和短线资金为主，机构的真实融资杠杆看不到。"],
   ["换手率为等份额近似", "缺少逐日股本数据，用「篮子成交额 ÷ 篮子价格和」近似，已剔除大盘价格水平对成交额的机械抬升；但回购导致的股本缓慢变化未体现。"],
   ["ERP 输入含月频成分", "标普500 TTM 每股收益为月频（multpl.com），前向填充到日频；10 年期美债为日频。指数用 SPY 收盘价 ×10 换算。"],
+  ["杠杆温度是个只有两条腿的\"分层监测\"", "研报把杠杆按持有人分成六层来量，本页只接上了其中能<b>免费日频</b>拿到的部分：散户的杠杆ETF通道（两条腿，进温度）、机构的风险平价隐含杠杆（只展示）、以及可选的 FINRA 月频保证金净借款（只展示）。<br><br><b>缺的三层，以及为什么不硬凑</b>：① 研报量散户期权投机用的是 OCC 小单（&lt;10 张）看涨期权净买入，没有免费日频源，用别的期权指标顶替只会是另一个东西；② 对冲基金杠杆（研报用 HFRI 收益波动率 ÷ 标的波动率）试过用 HDG 替代，原始值秩相关 −0.309 看着很强，但转成分位后是 −0.006 甚至 +0.151，说明那是水平趋势造成的假象——HDG 是 beta 复制产品，它的波动率比测的是自己的股票 beta，不是杠杆；③ 银行杠杆用 IAI 试过，同一个毛病。这两条都已从合成里删掉，代码里留了记录，别再试第二遍。<br><br>还有一条口径上的将就：保证金净借款研报除的是<b>标普500总市值</b>，免费源拿不到逐日总市值，这里除的是<b>指数点位</b>。点位 = 市值 ÷ 除数，除数随回购与成分调整缓慢漂移，所以这条比值<b>跨十年读会有系统性偏移</b>，几年尺度内的相对高低才可用，不能拿它去对研报那张 1997 年起的图。"],
+  ["风险平价那条线：形状对得上研报，但预测力是零", "σ63(RPAR) ÷ σ63(无杠杆基准) 这条曲线复刻得相当成功——峰值落在 <b>2026-05-20</b>，与研报说的\"mid-May 创十年新高\"对得上，之后回落也对得上\"recent weeks 在退\"。<br><br>但它对未来 63 日纳指的秩相关是 <b>+0.000</b>。放进温度只会稀释（两项 −0.235 → 三项 −0.191），所以它只出现在\"另外两把尺\"里，不参与合成。<br><br>顺带记一个诱人的陷阱：把基准换成 SPY/TLT/GLD/DBC 按逆波动率月度再平衡，秩相关会变成 −0.159，看着像捡到宝——但那条线的峰在 2023–24，与研报的形状完全对不上，它测的多半是股债相对波动的 regime，不是风险平价基金的杠杆。<b>宁可要一个诚实的零，不要一个来路不明的 −0.159。</b>"],
   ["方向修正只改善极值标定，不改善排序", "换手率仍需外部方向系数（杠杆指标改用多空比后已自带方向）。实测：加与不加，温度与未来3个月收益的秩相关都是 −0.126；但崩盘时点的标定差别很大（2020 疫情底 30.9 偏冷 → 14.6 极度恐慌）。也就是说方向修正让温度计在极端处<em style=\"font-style:normal;color:var(--ink)\">叫得准</em>，但没让它<em style=\"font-style:normal;color:var(--ink)\">排得更准</em>。"]
 ];
 $("limits").innerHTML = LIMITS.map(([t, b]) =>

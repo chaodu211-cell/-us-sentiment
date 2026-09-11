@@ -229,6 +229,196 @@ for f in (t_repricing, t_bear, t_alert_exclusive, t_compose_sell, t_narrow_neutr
 print("\n新增用例全部通过" if ok else "\n新增用例有失败")
 
 
+# ---- 杠杆温度（leverage.py）----
+def t_leverage():
+    import os, tempfile
+    import pandas as pd, numpy as np, engine as E, leverage as LV
+
+    idx = pd.bdate_range("2020-01-01", periods=400)
+    def frame(px, vol):
+        return pd.DataFrame({"close": px, "rawclose": px, "volume": vol}, index=idx)
+
+    print("\n11) 杠杆ETF两条腿")
+    # 做多 100×10=1000，做空 50×10=500，指数ETF 20×250=5000
+    longs = {"TQQQ": frame(pd.Series(100.0, index=idx), pd.Series(10.0, index=idx))}
+    shorts = {"SQQQ": frame(pd.Series(50.0, index=idx), pd.Series(10.0, index=idx))}
+    base = {"SPY": frame(pd.Series(20.0, index=idx), pd.Series(250.0, index=idx))}
+    raw, meta = LV.letf_components(idx, longs, shorts, base)
+    chk("多空比 = 做多成交额/杠杆总成交额", np.allclose(raw["ratio"].dropna(), 1000/1500*100))
+    chk("交易强度 = 杠杆总成交额/指数ETF成交额", np.allclose(raw["intensity"].dropna(), 1500/5000*100))
+    chk("两条腿都给了未平滑当日值", {"ratio_daily", "intensity_daily"} <= set(raw))
+    # 成交额用未复权价：拆股当天价格减半、成交量翻倍，成交额应连续
+    px2 = pd.Series([100.0]*200 + [50.0]*200, index=idx)
+    vol2 = pd.Series([10.0]*200 + [20.0]*200, index=idx)
+    raw2, _ = LV.letf_components(idx, {"TQQQ": frame(px2, vol2)}, shorts, base)
+    chk("拆股不制造跳变（成交额用未复权价×成交量）",
+        abs(raw2["ratio_daily"].iloc[199] - raw2["ratio_daily"].iloc[200]) < 1e-9)
+    # 缺做空篮子时只剩强度，且分子只含做多
+    raw3, meta3 = LV.letf_components(idx, longs, {}, base)
+    chk("缺做空篮子：不出多空比", "ratio" not in raw3)
+    chk("缺做空篮子：强度退化为只含做多", np.allclose(raw3["intensity"].dropna(), 1000/5000*100))
+
+    print("12) 杠杆温度的合成")
+    p = pd.DataFrame({"ratio": pd.Series(80.0, index=idx), "intensity": pd.Series(20.0, index=idx)})
+    chk("两项等权", np.allclose(LV.temperature(p).dropna(), 50.0))
+    p2 = p.copy(); p2.loc[p2.index[-1], "intensity"] = np.nan
+    chk("缺一项时按剩余权重归一（不补 50）", abs(LV.temperature(p2).iloc[-1] - 80.0) < 1e-9)
+    chk("两项全缺 -> 空", bool(LV.temperature(pd.DataFrame(index=idx)).isna().all()))
+    chk("权重就是 LEV_W 里写的那两项", sorted(LV.LEV_W) == ["intensity", "ratio"])
+    # 多空比那一腿在 leverage.py 里算、在 engine 里被当成第六个分项显示，两边的平滑窗口
+    # 必须一致，否则页面上的"杠杆多空比"与进温度的那条线会是两条不同的线。
+    chk("两处平滑窗口没分叉（LEV_SMOOTH == TO_SMOOTH）", LV.LEV_SMOOTH == E.TO_SMOOTH,
+        f"{LV.LEV_SMOOTH} vs {E.TO_SMOOTH}")
+
+    print("13) 风险平价隐含杠杆")
+    rng = np.random.default_rng(3)
+    r = pd.Series(rng.normal(0, 0.01, len(idx)), index=idx)
+    legs = {t: frame((1 + r).cumprod() * 100, pd.Series(1.0, index=idx)) for t in LV.RP_BENCH}
+    fund = {LV.RP_FUND: frame((1 + 2 * r).cumprod() * 100, pd.Series(1.0, index=idx))}
+    s, m = LV.rp_leverage(idx, {**legs, **fund})
+    chk("基金波动=基准两倍时隐含杠杆≈2", abs(float(s.dropna().iloc[-1]) - 2.0) < 0.02,
+        f"读数={float(s.dropna().iloc[-1]):.3f}")
+    chk(f"前 {LV.VOL_WIN} 天不出读数（滚动波动率未满窗）", bool(s.iloc[:LV.VOL_WIN].isna().all()))
+    chk("缺基准腿 -> 不出读数并说明原因",
+        LV.rp_leverage(idx, {**fund, "SPY": legs["SPY"]})[0] is None)
+    chk("缺 RPAR -> 不出读数", LV.rp_leverage(idx, legs)[0] is None)
+
+    print("14) 保证金净借款（月频 + 发布滞后）")
+    with tempfile.TemporaryDirectory() as td:
+        months = pd.date_range("2019-12-31", periods=14, freq="ME")
+        debits = [900.0 + 10 * i for i in range(len(months))]        # 逐月递增，便于分辨用的是哪一期
+        with open(os.path.join(td, LV.MARGIN_FILE), "w") as f:
+            f.write("Date,Debit,CreditCash,CreditMargin\n")
+            for d, v in zip(months[::-1], debits[::-1]):    # 新到旧，带表头，带千分位与美元号
+                f.write(f'{d:%Y-%m-%d},"${v * 1e9:,.0f}",{200e9:.0f},{150e9:.0f}\n')
+        mdf = LV.read_margin(td)
+        chk("带引号千分位的金额能读对，并统一换算成十亿美元",
+            abs(float(mdf["debit"].iloc[0]) - 900.0) < 1e-6, f"读到={float(mdf['debit'].iloc[0]):.1f}")
+        chk("表头被跳过、行数正确", len(mdf) == len(months))
+        level, ratio, mmeta = LV.margin_gauge(idx, mdf, spx=None)
+        chk("净借款 = 借方 − (现金贷方 + 融资贷方)",
+            abs(float(level.dropna().iloc[-1]) - (debits[-1] - 350.0)) < 1e-6)
+        # 发布滞后：某月末的数要到"月末 + MARGIN_LAG_DAYS"才可见，此前只能看到上一期
+        i_m = 5
+        m_end, prev_net, new_net = months[i_m], debits[i_m-1] - 350.0, debits[i_m] - 350.0
+        mid = level.reindex(idx).loc[m_end + pd.Timedelta(days=LV.MARGIN_LAG_DAYS - 10):
+                                     m_end + pd.Timedelta(days=LV.MARGIN_LAG_DAYS - 2)].dropna()
+        after = level.reindex(idx).loc[m_end + pd.Timedelta(days=LV.MARGIN_LAG_DAYS + 1):
+                                       m_end + pd.Timedelta(days=LV.MARGIN_LAG_DAYS + 5)].dropna()
+        chk("发布滞后内仍用上一期的数（无前视）", bool(len(mid)) and np.allclose(mid, prev_net),
+            f"读到={list(np.round(mid.values, 1))[:3]} 期望={prev_net}")
+        chk("过了发布滞后才切到新一期", bool(len(after)) and np.allclose(after, new_net),
+            f"读到={list(np.round(after.values, 1))[:3]} 期望={new_net}")
+        chk("有 spx 时分位算在比值上、展示值仍是净借款",
+            not np.allclose(LV.margin_gauge(idx, mdf, spx=pd.Series(5000.0, index=idx))[1].dropna(),
+                            level.dropna()))
+        chk("缺文件 -> 明确说明原因", LV.read_margin(td, "_nope.csv") is None)
+
+    print("15) 接线：减仓温度那一格换成杠杆温度")
+    adj = pd.DataFrame({c: pd.Series(np.linspace(10, 90, len(idx)), index=idx) for c in E.ORDER})
+    rawd = pd.DataFrame({"_narrow_neutral": pd.Series(50.0, index=idx)})
+    lev = pd.Series(np.linspace(90, 10, len(idx)), index=idx)
+    base_t = E.compose_sell(adj, rawd)
+    swap_t = E.compose_sell(adj, rawd, lev_temp=lev)
+    w = E.SELL_W["leverage"] / sum(E.SELL_W.values())
+    chk("杠杆那一格确实被顶替（差值=权重×两者之差）",
+        np.allclose((swap_t - base_t).dropna(), (w * (lev - adj["leverage"])).dropna()))
+    chk("不传 lev_temp 时行为与旧版一致", np.allclose(base_t.dropna(),
+        sum((rawd["_narrow_neutral"] if k == "narrow" else adj[k]) * v
+            for k, v in E.SELL_W.items()).dropna() / sum(E.SELL_W.values())))
+    chk("杠杆温度全空时该日不出减仓温度",
+        bool(np.isnan(E.compose_sell(adj, rawd, lev_temp=pd.Series(np.nan, index=idx)).iloc[-1])))
+
+    print("16) 杠杆温度无前视")
+    rngv = np.random.default_rng(11)
+    rawdf = pd.DataFrame({"leverage": pd.Series(rngv.normal(70, 5, len(idx)), index=idx),
+                          "_lev_intensity": pd.Series(rngv.normal(20, 4, len(idx)), index=idx)})
+    _, t1 = E.leverage_monitor(rawdf)
+    tampered = rawdf.copy(); tampered.iloc[300:] = 999.0
+    _, t2 = E.leverage_monitor(tampered)
+    chk("改动第 300 天之后的输入不影响之前的读数",
+        np.allclose(t1.iloc[:300].dropna(), t2.iloc[:300].dropna()))
+    chk("分位与页面其余分项同尺（走 engine.rolling_pct）",
+        np.allclose(E.leverage_monitor(rawdf)[0]["ratio"].dropna(),
+                    E.rolling_pct(rawdf["leverage"]).dropna()))
+    chk("温度落在 0-100", bool(t1.dropna().between(0, 100).all()))
+
+def t_margin_fetch():
+    """fetch_margin.py 的解析与校验（离线）。在线地址没法在 CI 里验，但"拿到文件之后
+    怎么读、什么情况下拒绝写"这部分必须是测过的——它是唯一能挡住脏数据的关卡。"""
+    import datetime as dt, io, os, tempfile, zipfile
+    import fetch_margin as FM, leverage as LV
+
+    def mk_xlsx(rows, shared=True):
+        strs, body = [], []
+        def cell(v, r, c):
+            ref = chr(65 + c) + str(r)
+            if isinstance(v, (int, float)):
+                return f'<c r="{ref}"><v>{v}</v></c>'
+            if shared:
+                if v not in strs:
+                    strs.append(v)
+                return f'<c r="{ref}" t="s"><v>{strs.index(v)}</v></c>'
+            return f'<c r="{ref}" t="inlineStr"><is><t>{v}</t></is></c>'
+        for i, row in enumerate(rows, 1):
+            body.append(f'<row r="{i}">' + "".join(cell(v, i, j) for j, v in enumerate(row)) + "</row>")
+        ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("xl/worksheets/sheet1.xml",
+                       f'<worksheet {ns}><sheetData>{"".join(body)}</sheetData></worksheet>')
+            if shared:
+                z.writestr("xl/sharedStrings.xml",
+                           f'<sst {ns}>' + "".join(f"<si><t>{s}</t></si>" for s in strs) + "</sst>")
+        return buf.getvalue()
+
+    hdr = ["Month", "Debit Balances in Customers' Securities Margin Accounts",
+           "Free Credit Balances in Customers' Cash Accounts",
+           "Free Credit Balances in Customers' Securities Margin Accounts"]
+    today = dt.date.today()
+    rows = [hdr]
+    for i in range(56):                     # 最近 56 个月，保证 validate 的"太旧"这关能过
+        m = today.month - 55 + i
+        rows.append([dt.date(today.year + (m - 1) // 12, (m - 1) % 12 + 1, 1).strftime("%b-%y"),
+                     800e9 + i * 5e9, 190e9, 140e9])
+
+    print("\n17) FINRA 保证金表的解析与校验")
+    for shared in (True, False):
+        recs = FM.parse_blob(mk_xlsx(rows, shared), "x.xlsx")
+        tag = "共享字符串" if shared else "内联字符串"
+        chk(f"xlsx（{tag}）解析出全部行", len(recs) == 56, f"{len(recs)} 行")
+        chk(f"xlsx（{tag}）日期归到月末", recs[-1][0].day >= 28)
+    lines = [",".join(f'"{c}"' for c in hdr)] + \
+            [f'"{r[0]}","${r[1]:,.0f}","{r[2]:,.0f}","{r[3]:,.0f}"' for r in rows[1:]]
+    recs = FM.parse_blob("\n".join(lines).encode(), "x.csv")
+    chk("csv（带引号千分位与美元号）解析一致", len(recs) == 56 and abs(recs[-1][1] - 1075e9) < 1)
+    ok_, why = FM.validate(FM.scale_to_bn(recs))
+    chk("正常表通过校验", ok_, why)
+    bad = [hdr] + [[r[0], 5.0, 1.0, 1.0] for r in rows[1:]]          # 列认错 → 量级荒谬
+    chk("量级不对时拒绝写入", not FM.validate(FM.scale_to_bn(FM.parse_blob(mk_xlsx(bad), "b.xlsx")))[0])
+    old = [hdr] + [[f"{2000 + i // 12}-{i % 12 + 1:02d}", 800e9, 190e9, 140e9] for i in range(40)]
+    chk("数据太旧时拒绝写入", not FM.validate(FM.scale_to_bn(FM.parse_blob(mk_xlsx(old), "o.xlsx")))[0])
+    chk("认得 Excel 日期序列号", FM.as_date("45689").year == 2025)
+    chk("认得 Jan-26 / 1/31/2026 两种写法",
+        FM.as_date("Jan-26").year == 2026 and FM.as_date("1/31/2026").month == 1)
+    chk("从落地页 HTML 里认得出数据文件链接",
+        FM.find_link('<a href="/sites/default/files/2026-08/margin-statistics.xlsx">x</a>')
+        == ["https://www.finra.org/sites/default/files/2026-08/margin-statistics.xlsx"])
+    with tempfile.TemporaryDirectory() as td:
+        FM.RAW, FM.OUT = td, os.path.join(td, LV.MARGIN_FILE)
+        FM.write(FM.scale_to_bn(FM.parse_blob(mk_xlsx(rows), "x.xlsx")))
+        mdf = LV.read_margin(td)
+        chk("写出的文件 engine 侧能原样读回", mdf is not None and len(mdf) == 56
+            and abs(float(mdf["debit"].iloc[-1]) - 1075.0) < 1e-6)
+        chk("文件按新到旧排列（与 raw/ 下其他文件一致）",
+            open(FM.OUT).readline().split(",")[0] == f"{mdf.index[-1]:%Y-%m-%d}")
+
+
+t_leverage()
+t_margin_fetch()
+print("\n杠杆温度用例全部通过" if ok else "\n杠杆温度用例有失败")
+
+
 # ---- 增量合并 ----
 def t_merge():
     import fetch_sp500 as FS
