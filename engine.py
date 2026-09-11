@@ -87,15 +87,15 @@ BANDS = [20.0, 40.0, 60.0, 80.0]
 #   1. ERP 那一项当时是 blend，秩相关 -0.007（已在上面修掉）
 #   2. 上涨占比与站上MA20占比相关系数 0.84，是同一个东西量两遍，
 #      名义各占 1/6、合计吃掉温度方差的 38%，而它俩恰是六项里最弱的（-0.023 / -0.047）
-#   3. 判别力最强的因子根本不在温度里：窄幅逼空评分秩相关 -0.348，是第二名（换手率 -0.153）的两倍多
-# 于是减仓温度只保留"标顶真的有用"的四类，并把窄幅评分放进来给最高权重：
-#   TOP2抱团 x2、杠杆多空比 x2、窄幅逼空 x3、站上MA20 x1、换手率 x1
+#   3. 判别力最强的因子根本不在温度里：上涨拥挤度秩相关 -0.348，是第二名（换手率 -0.153）的两倍多
+# 于是减仓温度只保留"标顶真的有用"的四类，并把上涨拥挤度放进来给最高权重：
+#   TOP2抱团 x2、杠杆多空比 x2、上涨拥挤度 x3、站上MA20 x1、换手率 x1
 # 上涨占比不入（与MA20重复），ERP 不入（估值是慢变量，对3个月内的顶没有分辨力：
 # 最高10%的日子 +4.02%、最低10% +7.91%，两端差异来自"便宜"那一侧，对减仓无用）。
 #
 # 权重不是拍的：在 7 因子 x 0-3 档权重的 16384 种组合里，筛出"两段子样本秩相关同号"的
 # 15575 个合格组合后按"顶部十分位未来63日收益"排序，前 12 名全是同一个形状——
-# TOP2 + 杠杆 + 重仓窄幅 + 一个宽度项；ERP 一次都没进过前列，换手率大多缺席或垫底。
+# TOP2 + 杠杆 + 重仓上涨拥挤度 + 一个宽度项；ERP 一次都没进过前列，换手率大多缺席或垫底。
 # 敏感性：把任一权重 ±1（含把 MA20 或换手率整项删掉），触发后 +63日 都落在 -1.5% ~ -2.5%、
 # 为负率 55%~65% 之间，没有一处是靠某个特定权重撑住的。
 # 【2026-09 更新】"leverage" 这一格喂进去的东西换了：从"杠杆多空比"单项换成 leverage.py 的
@@ -349,7 +349,7 @@ def build_indicators():
         raw["ma20"] = above.sum(axis=1) / ma20.notna().sum(axis=1).replace(0, np.nan) * 100
         meta["ma20"] = f"篮子内收盘价站上{MA_WIN}日均线的家数占比"
 
-        # --- 4b. 窄幅逼空评分（不进入综合温度，单独作为第四类预警）---
+        # --- 4b. 上涨拥挤度（不进入综合温度，单独作为第四类预警）---
         # 综合温度有个结构性盲区：宽度差一律读成"降温"。但指数创新高的同时宽度崩坏，
         # 恰恰是最经典的顶部形态之一（2024年12月：纳指从505涨到525、站上MA20占比却
         # 掉了44个百分点，温度只有35-64，红点黑框都没响）。这个评分专门抓这种形态。
@@ -366,10 +366,10 @@ def build_indicators():
             sc = (rolling_pct(narrow) + rolling_pct(-brd_chg) + near) / 3.0
             raw["_narrow_score"] = sc.where(cw.pct_change(NT_WIN) > 0)  # 只在上涨市里成立
             # 供减仓温度合成用的版本：下跌市里记为中性 50 而不是缺失。
-            # 两者的区别很重要——预警用的 _narrow_score 必须在下跌市里"无定义"（窄幅逼空
+            # 两者的区别很重要——预警用的 _narrow_score 必须在下跌市里"无定义"（上涨拥挤度
             # 本来就只在上涨市成立，那是它的语义）；但合成用的不能是 NaN，因为 compose_sell
             # 要求各项齐备，一个 NaN 会让整个下跌市的减仓温度消失。下跌市读 50 语义上也对：
-            # 那时候该说话的是熊市反弹预警，不是窄幅逼空。
+            # 那时候该说话的是熊市反弹预警，不是上涨拥挤度。
             # 注意两层 where 的分工：外层把"下跌市"填成 50，内层把"历史不足、分位还算不出来"
             # 的日子保留为 NaN——后者是真的没有读数，不能假装中性。
             raw["_narrow_neutral"] = sc.where(cw.pct_change(NT_WIN) > 0, 50.0).where(sc.notna())
@@ -378,21 +378,20 @@ def build_indicators():
             raw["_ndx_dd"] = dd
 
     # --- 5. 杠杆资金多空比 ---
-    # 美股无日频融资买入额（FINRA 只有月频余额且滞后数周——那条线现在作为可选的展示读数
-    # 接在 leverage.py 里，见 5b）。这里用杠杆ETF的多空成交额之比：
+    # 美股无日频融资买入额（FINRA 只有月频余额、滞后数周，且其 WAF 按云厂商 IP 段封，
+    # CI 上取不到）。这里用杠杆ETF的多空成交额之比：
     # 崩盘时做空杠杆ETF成交额激增、比值塌陷；狂热时相反。方向内生，无需外部修正。
     longs, shorts = load_many(LEV_LONG), load_many(LEV_SHORT)
     # 多空比本身的计算已搬到 leverage.py（LV.letf_components）——它是杠杆温度的一条腿，
     # 两处各算一遍必然会分叉。这里只负责取值与命名，口径与旧版逐日一致。
     lev_frames = dict(longs)
     lev_frames.update(shorts)
-    for t in tuple(LV.BASE_ETFS) + (LV.RP_FUND,) + tuple(LV.RP_BENCH):
+    for t in LV.BASE_ETFS:
         if t not in lev_frames:
             d = load(t)
             if d is not None:
                 lev_frames[t] = d
-    spx_level = spy["close"].reindex(idx) * 10.0 if spy is not None else None
-    lv_raw, lv_meta, lv_notes = LV.build(idx, lev_frames, spx=spx_level, raw_dir=RAW)
+    lv_raw, lv_meta, lv_notes = LV.build(idx, lev_frames)
     lev_info = {"meta": lv_meta, "notes": lv_notes}
 
     if "ratio" in lv_raw:
@@ -410,10 +409,8 @@ def build_indicators():
         raw["leverage"] = (ldv / base.replace(0, np.nan) * 100).rolling(TO_SMOOTH, min_periods=1).mean()
         meta["leverage"] = "杠杆ETF成交额 / 篮子总成交额（回退口径：缺做空杠杆ETF数据）"
 
-    # --- 5b. 杠杆温度的其余分项 ---
-    # 多空比只是研报杠杆框架里的一条腿，leverage.py 还按研报的分层口径算了三样：
-    # 杠杆ETF交易强度（散户）、风险平价隐含杠杆（机构，展示用）、保证金净借款（可选月频）。
-    # 一律以 `_lev_` 前缀存进 rawdf —— 下划线开头的列 compose() 会跳过，
+    # --- 5b. 杠杆温度的第二条腿：交易强度 ---
+    # 以 `_lev_` 前缀存进 rawdf —— 下划线开头的列 compose() 会跳过，
     # 所以六项综合温度、快口径温度、蓝点的标定一律不受影响（这是有意为之，见 main()）。
     for k, v in lv_raw.items():
         if k not in ("ratio", "ratio_daily"):
@@ -592,37 +589,37 @@ BEAR_MA    = 200   # 趋势基准均线
 BEAR_SLOPE = 21    # 均线斜率的回看天数（均线较 21 日前更低 = 下行）
 BEAR_TH    = 60    # 熊市中的过热门槛（标准红点是 80）
 
-# 窄幅逼空评分参数
-NT_WIN = 63     # 回看窗口（约3个月）：窄幅顶是慢慢形成的，不能用短窗口
+# 上涨拥挤度参数
+NT_WIN = 63     # 回看窗口（约3个月）：上涨拥挤的顶是慢慢形成的，不能用短窗口
 NT_DD = 6.0     # 距峰值回撤在此百分比内才算"仍在高位"（0%回撤=100分，-6%及以下=0分）
 NT_TH = 85      # 【当前未被任何规则使用】原橙线预警的阈值。橙线已于 2026-09 取消，
-                # 其"窄幅逼空"的信息并入黑框（见下）。保留此常量供回退。
+                # 其"上涨拥挤度"的信息并入黑框（见下）。保留此常量供回退。
                 # NT_WIN / NT_DD 仍在使用——它们是 _narrow_score 的计算参数，与本阈值无关。
-# 黑框（2026-09 定版）= TOP2 抱团分位 > CROWD_TOP2 且 窄幅逼空评分 > CROWD_NARROW。
-# 同时取消了橙线预警——它原本只看窄幅评分一项，与本条高度同源，留着是两个名字讲同一件事。
+# 黑框（2026-09 定版）= TOP2 抱团分位 > CROWD_TOP2 且 上涨拥挤度 > CROWD_NARROW。
+# 同时取消了橙线预警——它原本只看上涨拥挤度一项，与本条高度同源，留着是两个名字讲同一件事。
 #
-# 两项口径不同，别混为一谈：TOP2 是 252 日滚动分位，窄幅评分是 0-100 的合成分。
-# 副作用（必须知道）：窄幅评分只在**上涨市**里有定义（指数 NT_WIN 日为跌时是 NaN，
+# 两项口径不同，别混为一谈：TOP2 是 252 日滚动分位，上涨拥挤度是 0-100 的合成分。
+# 副作用（必须知道）：上涨拥挤度只在**上涨市**里有定义（指数 NT_WIN 日为跌时是 NaN，
 # 见 _narrow_score），因此黑框在下跌市中永不触发。作为"抱团顶部形态"这是合理的，
 # 但它不是一个"任何时候都能报抱团"的信号。
 #
 # 标定依据（QQQ 63 交易日远期，连 3 日确认，基准 +5.19% / 27%为负 / 触发后回撤 -5.87%）：
-# TOP2 × 窄幅是一整片平坦的有效区，不是尖峰——窄幅 65~80 四列 × TOP2 70~90 五行，
+# TOP2 × 上涨拥挤度是一整片平坦的有效区，不是尖峰——上涨拥挤度 65~80 四列 × TOP2 70~90 五行，
 # 日级收益全部落在 -0.21% ~ -1.63%，为负 48~63%，触发后 63 日最大回撤 -11.9% ~ -13.7%。
 # 取 80/75 而非矩阵里数字更好看的格子，理由是两段子样本同号：
 #   前段 2017-2021  -1.73% / 68%为负      后段 2022-2026  -0.39% / 54%为负
-# 窄幅取 75 而不是 70，正因为 70 的后段会翻正（+0.47%）。
+# 上涨拥挤度取 75 而不是 70，正因为 70 的后段会翻正（+0.47%）。
 # 全样本 56 天 / 11 段（约 1.2 次/年），日级 -0.84% / 59%为负 / 回撤 -12.28%。
 #
 # **要打的折扣**：只有 11 段，且集中在 2020、2024、2026 三年，2017/2018/2019/2021/
 # 2022/2023 六年零触发——2021 泡沫顶和 2022 熊市它都没响。最近一段 2026-05-07~06-03
 # 后 63 日 +4.16%，是错报。参数仍是在同一段历史上调出来的，平坦区只降低过拟合风险，消不掉。
 CROWD_TOP2   = 80  # 黑框：TOP2 行业成交额占比的 252 日滚动分位门槛
-CROWD_NARROW = 75  # 黑框：窄幅逼空评分门槛（不是分位，是评分本身）
+CROWD_NARROW = 75  # 黑框：上涨拥挤度门槛（不是分位，是评分本身）
 CROWD_LEV    = 80  # 【当前未被任何规则使用】曾用于黑框的杠杆分位门槛，保留供回退。
 # 为什么杠杆不进黑框：杠杆**有**独立预测力——控制过去 63 日动量后，它对未来 63 日收益的
 # 偏相关在各子时期是 -0.19(全) / -0.34(2017-20) / -0.59(2021) / -0.43(2023-26)，
-# 2021 与 2023-26 两段甚至强于窄幅评分。但它与过去收益的秩相关高达 +0.50~+0.72（强烈跟涨），
+# 2021 与 2023-26 两段甚至强于上涨拥挤度。但它与过去收益的秩相关高达 +0.50~+0.72（强烈跟涨），
 # 任何"高位切分"都会把"因为涨了所以杠杆高"（无信息）和"杠杆异常地高"（有信息）混在一起，
 # 阈值化即毁掉该信息：滚动分位 >=80 覆盖 27.4% 的交易日、回撤 -6.48%（基准 -5.87%）；
 # 绝对水平跨期漂移，剔除 2021 后 >80 是 +3.58%；z-score 在 2023-26 偏相关归零。
@@ -646,32 +643,26 @@ def _p(n):
 
 ALERTS = [
     {"key": "hot",   "name": "红点预警", "mark": "dot",  "color": "#CE5A4E", "persist": PERSIST,
-     "desc": f"减仓温度 > {SELL_TH:.0f}，{_p(PERSIST)}（减仓温度＝TOP2抱团×2、杠杆温度×2、"
-             f"窄幅逼空×3、站上MA20×1、换手率×1 的加权分位，与页面展示的综合温度是两个数。"
-             f"杠杆那一格自 2026-09 起用「杠杆温度」＝多空比与杠杆ETF交易强度各半，"
-             f"不再是单看多空比——原因见 compose_sell 注释）"},
+     "desc": f"减仓温度 > {SELL_TH:.0f}，{_p(PERSIST)}。减仓温度＝TOP2抱团×2、杠杆温度×2、"
+             f"上涨拥挤度×3、站上MA20×1、换手率×1 的加权分位，与页面顶部的综合温度是两个数"},
     {"key": "hot_bear", "name": "熊市反弹预警", "mark": "dot", "color": "#CE5A4E", "hollow": True,
      "persist": PERSIST,
      "desc": f"已跌破下行的 {BEAR_MA} 日均线（确认的下行趋势）且综合温度 > {BEAR_TH}，{_p(PERSIST)}。"
-             f"熊市里滚动分位的参照系全是低值，反弹再猛也顶不到 {BANDS[3]:.0f}——"
-             f"2022 全年零红点正是这么来的，此条专门补上熊市反弹高点的减仓信号"},
-    {"key": "cold",  "name": "蓝点预警", "mark": "dot",  "color": "#3D7FB8", "persist": PERSIST_COLD,
+             f"熊市里滚动分位的参照系全是低值，反弹再猛也顶不到 {BANDS[3]:.0f}——此条专门补熊市反弹高点"},
+    {"key": "cold",  "name": "蓝点预警", "mark": "dot", "color": "#3D7FB8", "persist": PERSIST_COLD,
      "desc": f"快口径温度（三个平滑项取当日值）< {COLD_TH:.0f} 且 VIX ≥ {VIX_COLD}"
              + (f"、且纳指自峰值回撤 ≥ {NDX_DD_COLD:.0f}%" if NDX_DD_COLD else "")
              + f"，{_p(PERSIST_COLD)}"},
     {"key": "cold_soft", "name": "空心蓝点（宏观逆风）", "mark": "dot", "color": "#3D7FB8",
      "hollow": True, "persist": PERSIST_COLD,
-     "desc": f"蓝点条件成立，但同时处于贴现率重估状态："
-             f"10 年期实际利率 < {RR_LEVEL:g}% 且 6 个月上行 > {RR_RISE:g} 个百分点。"
-             f"此时下跌由分母（贴现率）驱动，情绪见底不等于价格见底——"
-             f"2022 年 1/2/4 月三次亏钱的蓝点全部落在此状态内，建议分批而非满仓"},
+     "desc": f"蓝点条件成立，但同时处于贴现率重估状态：10 年期实际利率 < {RR_LEVEL:g}% 且 "
+             f"6 个月上行 > {RR_RISE:g} 个百分点。此时下跌由分母驱动，情绪见底不等于价格见底，建议分批而非满仓"},
     {"key": "crowd", "name": "黑框预警", "mark": "box",  "color": "#0B0F16", "persist": PERSIST,
-     "desc": f"TOP2行业成交额占比 > {CROWD_TOP2} 分位 且 窄幅逼空评分 > {CROWD_NARROW}，"
-             f"{_p(PERSIST)}。窄幅评分＝市值加权跑赢等权的分位、宽度恶化的分位、距峰值位置"
-             f"三者等权平均，且要求指数 {NT_WIN} 日为涨——即「钱挤进少数几个行业，"
-             f"同时指数靠少数股票撑在高位、宽度已经崩坏」，是综合温度看不见的顶部形态。"
-             f"下跌市中窄幅评分无定义，故本预警只在上涨市出现"},
+     "desc": f"TOP2行业成交额占比 > {CROWD_TOP2} 分位 且 上涨拥挤度 > {CROWD_NARROW}，{_p(PERSIST)}。"
+             f"即「钱挤进少数几个行业，同时指数靠少数股票撑在高位、宽度已经崩坏」。"
+             f"下跌市中上涨拥挤度无定义，故本预警只在上涨市出现"},
 ]
+
 
 
 def repricing_regime(rr):
@@ -715,7 +706,7 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
 
     temp      主口径温度（三项平滑），用于页面展示与熊市反弹预警
     temp_sell 减仓温度（SELL_W 加权），仅用于红点；缺省时红点退回用主口径 > BANDS[3]，
-              行为与旧版一致（compose_sell 拿不到窄幅评分时就是这种情况）
+              行为与旧版一致（compose_sell 拿不到上涨拥挤度时就是这种情况）
     temp_fast 快口径温度（同样六项等权，但三个平滑项取当日值），仅用于蓝点；
               缺省时蓝点退回用主口径，行为与旧版一致。
     real_rate 10 年期实际利率；缺省时蓝点不做宏观分级（全部记为实心蓝点）。
@@ -745,7 +736,7 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
     rp = repricing_regime(real_rate.reindex(t.index)) if real_rate is not None else None
     rp = pd.Series(False, index=t.index) if rp is None else rp.reindex(t.index).fillna(False)
     out = {"hot": hot, "hot_bear": hot_bear, "cold": cold & ~rp, "cold_soft": cold & rp}
-    # 黑框 = TOP2 抱团分位 > CROWD_TOP2 且 窄幅逼空评分 > CROWD_NARROW。
+    # 黑框 = TOP2 抱团分位 > CROWD_TOP2 且 上涨拥挤度 > CROWD_NARROW。
     # TOP2 那一项单独用 252 日滚动分位：扩张窗口"永不遗忘"，2020-21 的极值会把后来的
     # 抱团永久挡在高分位之外——实测扩张口径下 2022 年之后再没触发过，等于失明。
     top2 = None
@@ -756,7 +747,7 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
     if narrow is None or top2 is None:
         out["crowd"] = pd.Series(False, index=t.index)
     else:
-        # 窄幅评分在下跌市为 NaN（见上方注释），fillna(False) 后自然不触发
+        # 上涨拥挤度在下跌市为 NaN（见上方注释），fillna(False) 后自然不触发
         out["crowd"] = (top2.reindex(t.index) > CROWD_TOP2) & (narrow.reindex(t.index) > CROWD_NARROW)
     out = {k: v.reindex(t.index).fillna(False) for k, v in out.items()}
 
@@ -824,7 +815,7 @@ def compose(rawdf, dirseries=None, fast=False):
 def compose_sell(adj, rawdf, lev_temp=None):
     """减仓温度：按 SELL_W 加权合成，只喂给红点预警，不作为页面展示的综合温度。
 
-    分项取**方向修正后**的分位（与综合温度同源，保证两个数可比），窄幅评分取
+    分项取**方向修正后**的分位（与综合温度同源，保证两个数可比），上涨拥挤度取
     _narrow_neutral（下跌市填 50 的那一版）。任一分项缺失则当日不出减仓温度——
     与综合温度一样，宁可不出，也不用半套输入产出一个看似正常的读数。
     数据不足以合成时返回 None，调用方退回用综合温度，行为与旧版一致。
@@ -875,7 +866,7 @@ def leverage_monitor(rawdf):
 
     返回 (pct: DataFrame[ratio,intensity], temp: Series)。
     分位一律走本模块的 rolling_pct / expanding_pct（由 LV.LEV_REF 选），
-    与页面其余分位共用同一把尺子——杠杆温度要与 TOP2、窄幅等项加权平均，尺子不同则不可加。
+    与页面其余分位共用同一把尺子——杠杆温度要与 TOP2、上涨拥挤度等项加权平均，尺子不同则不可加。
     注意 ratio 这一腿直接取 rawdf["leverage"]，与"六个分项"里显示的杠杆多空比是同一个数，
     不另算一遍。
     """
@@ -893,12 +884,6 @@ LEV_LABELS = {
     "ratio":     ("杠杆资金多空比", "加杠杆的方向", "%", "做多占杠杆ETF总成交额"),
     "intensity": ("杠杆ETF交易强度", "用杠杆包装交易的强度", "%", "占指数ETF成交额"),
 }
-LEV_GAUGES = {
-    "rp":     ("风险平价隐含杠杆", "机构 · 研报 Fig 6", "×", "倍"),
-    "margin": ("保证金净借款", "散户 · 研报 Fig 4", "", "十亿美元"),
-}
-
-
 def _ser(s, idx, nd=2):
     return [None if not np.isfinite(v) else round(float(v), nd) for v in s.reindex(idx).values]
 
@@ -917,7 +902,6 @@ def build_lev_block(rawdf, lev_pct, lev_temp, lev_info, idx):
         "used_in_sell": "leverage" in SELL_W,
         "smooth": LV.LEV_SMOOTH,
         "components": [],
-        "gauges": [],
         "notes": notes,
         "series": {"temperature": _ser(t, idx, 1)},
     }
@@ -936,34 +920,71 @@ def build_lev_block(rawdf, lev_pct, lev_temp, lev_info, idx):
         })
         block["series"][k + "_pct"] = _ser(p, idx, 1)
 
-    for k, (name, desc, unit, unit_label) in LEV_GAUGES.items():
-        col = rawdf.get(f"_lev_{k}")
-        if col is None:
-            continue
-        s = col.reindex(idx)
-        v = s.dropna()
-        if not len(v):
-            notes[k] = notes.get(k, "序列为空")
-            continue
-        # 分位可能要算在另一条序列上（保证金：算在「净借款 ÷ 指数点位」上，
-        # 否则指数涨一倍、净借款按比例涨，分位会误判成"杠杆创新高"）
-        pv = rawdf.get(f"_lev_{k}_ratio")
-        p = rolling_pct((pv if pv is not None else col).reindex(idx))
-        peak_i = v.idxmax()
-        block["gauges"].append({
-            "key": k, "name": name, "desc": desc, "unit": unit, "unit_label": unit_label,
-            "value": round(float(v.iloc[-1]), 3),
-            "as_of": v.index[-1].strftime("%Y-%m-%d"),
-            "pct": (round(float(p.reindex([v.index[-1]]).iloc[0]), 1)
-                    if np.isfinite(p.reindex([v.index[-1]]).iloc[0]) else None),
-            "peak": {"date": peak_i.strftime("%Y-%m-%d"), "value": round(float(v.loc[peak_i]), 3)},
-            "from_peak": round(float(v.iloc[-1] / v.loc[peak_i] - 1.0) * 100, 1),
-            "chg_1y": (round(float(v.iloc[-1] / v.iloc[-253] - 1.0) * 100, 1) if len(v) > 253 else None),
-            "start": v.index[0].strftime("%Y-%m-%d"),
-            "method": meta.get(k, ""),
-        })
-        block["series"][k] = _ser(s, idx, 3)
     return block
+
+
+# ---------- 页面「分项」列表 ----------
+# 只管展示：列出哪几条线、每条显示什么。**不改任何计算**——综合温度仍是 ORDER 那六项等权，
+# 减仓温度仍按 SELL_W 加权，两者的口径与门槛标定都没动。
+# 与温度成分的差别有两处，tag 里写明了：上涨拥挤度与 VIX 不进综合温度；
+# 上涨个股占比进综合温度但不单独列（与站上MA20 相关 0.84，列两行是同一件事量两遍）。
+PANEL = [
+    ("crowd_up", "上涨拥挤度",        "指数靠少数股票撑在高位", "减仓"),
+    ("top2",     "TOP2行业成交额占比", "资金抱团度",           "综合·减仓"),
+    ("lev",      "杠杆温度",          "加杠杆的方向与强度",     "综合·减仓"),
+    ("erp",      "风险溢价",          "估值性价比（已反向）",   "综合"),
+    ("turnover", "换手率",            "成交活跃度",            "综合·减仓"),
+    ("ma20",     "站上MA20占比",      "中期趋势宽度",          "综合·减仓"),
+    ("vix",      "VIX指数",           "隐含波动率（已反向）",   "只看"),
+]
+
+
+def build_panel(rawdf, adj, lev_pct, lev_temp, vix, idx):
+    """→ data.json 的 panel：七行，每行 {名称, 当前值文字, 分位, 分位历史, 归属}。"""
+    def last(s):
+        v = s.reindex(idx).dropna()
+        return float(v.iloc[-1]) if len(v) else None
+    def fmt(v, suf="", nd=1):
+        return "—" if v is None else f"{v:.{nd}f}{suf}"
+
+    turn = rawdf.get("turnover")
+    turn_idx = None
+    if turn is not None:
+        med = float(turn.reindex(idx).dropna().median())
+        turn_idx = (last(turn) / med * 100.0) if med else None
+
+    pct_src = {
+        "crowd_up": rawdf.get("_narrow_neutral"),
+        "top2": adj.get("top2"),
+        "lev": lev_temp,
+        "erp": adj.get("erp"),
+        "turnover": adj.get("turnover"),
+        "ma20": adj.get("ma20"),
+        "vix": (100.0 - rolling_pct(vix)) if vix is not None else None,
+    }
+    val = {
+        "crowd_up": ("—" if "_ndx_dd" not in rawdf else fmt(last(rawdf.get("_ndx_dd")), "%")),
+        "top2": fmt(last(rawdf.get("top2")), "%"),
+        "lev": (f"多空比 {fmt(last(lev_pct['ratio']) if 'ratio' in lev_pct else None, '', 0)}"
+                f" · 强度 {fmt(last(lev_pct['intensity']) if 'intensity' in lev_pct else None, '', 0)}"),
+        "erp": fmt(last(rawdf.get("erp")), "%", 2),
+        "turnover": ("—" if turn_idx is None else f"指数 {turn_idx:.0f}"),
+        "ma20": fmt(last(rawdf.get("ma20")), "%"),
+        "vix": fmt(last(vix)),
+    }
+    sub = {"crowd_up": "纳指距峰值；评分见右栏，下跌市无定义", "top2": "当日占比", "lev": "两腿分位（3:1 加权）",
+           "erp": "E/P − 10年期美债", "turnover": "100＝十年中位", "ma20": "当日占比", "vix": "收盘"}
+    out = []
+    for key, name, desc, tag in PANEL:
+        p = pct_src.get(key)
+        if p is None:
+            continue
+        p = p.reindex(idx)
+        out.append({"key": key, "name": name, "desc": desc, "tag": tag,
+                    "value": val[key], "sub": sub[key],
+                    "pct": (round(float(p.dropna().iloc[-1]), 1) if p.notna().any() else None),
+                    "series": _ser(p, idx, 1)})
+    return out
 
 
 def main():
@@ -1102,8 +1123,11 @@ def main():
                      "flags": {k: [bool(x) for x in v.values] for k, v in al.items()},
                      "counts": {k: int(v.sum()) for k, v in al.items()}}
 
-    # ---------- 杠杆温度（研报口径的多层杠杆监测，见 leverage.py）----------
+    # ---------- 杠杆温度（见 leverage.py）----------
     out["leverage_monitor"] = build_lev_block(rawdf, lev_pct, lev_temp, lev_info, have.index)
+    # ---------- 页面「分项」列表（展示用，不参与任何计算）----------
+    out["panel"] = build_panel(rawdf, adj.reindex(have.index), lev_pct.reindex(have.index),
+                               lev_temp, vix, have.index)
 
     for c in cols:
         name, desc = LABELS[c]
@@ -1141,9 +1165,6 @@ def main():
     if lm.get("temperature") is not None:
         print(f"杠杆温度 {lm['temperature']}（{lm['regime']}，"
               + "＋".join(f"{c['name']}{c['pct']}" for c in lm["components"]) + f"，{lm['ref']}分位）")
-    for g in lm.get("gauges", []):
-        print(f"  {g['name']} {g['value']:g}{g['unit'] or ' ' + g['unit_label']}（{g['as_of']}，分位 {g['pct']}，"
-              f"峰值 {g['peak']['value']:g} 于 {g['peak']['date']}，较峰值 {g['from_peak']:+.1f}%）")
     for k, why in (lm.get("notes") or {}).items():
         print(f"  ⓘ 杠杆分项 {k} 缺席：{why}")
     print(f"样本 {out['coverage']['stocks']} 成分股 / {out['coverage']['sectors']} 行业，历史 {out['coverage']['history_days']} 交易日，温度序列 {len(have)} 点")
