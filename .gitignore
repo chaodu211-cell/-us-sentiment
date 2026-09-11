@@ -1,3 +1,13 @@
 __pycache__/
 *.pyc
 run.log
+
+# raw/ 是十年原始数据（约43MB / 540个CSV），每次刷新都会重写全部文件。
+# 提交进 git 会让历史无限膨胀且无法回收——每日 churn 累积一年就是几百MB到GB级，
+# 而且删不掉（除非重写历史）。云端由 .github/workflows/daily.yml 用 actions/cache 缓存，
+# 本地就留在本地。删了也没关系，脚本会自动重新下载。
+raw/
+
+# 手工备份目录与 Pages 构建产物，都不该进仓库
+_backup/
+_site/
