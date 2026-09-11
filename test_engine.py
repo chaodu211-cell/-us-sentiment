@@ -260,7 +260,11 @@ def t_leverage():
 
     print("12) 杠杆温度的合成")
     p = pd.DataFrame({"ratio": pd.Series(80.0, index=idx), "intensity": pd.Series(20.0, index=idx)})
-    chk("两项等权", np.allclose(LV.temperature(p).dropna(), 50.0))
+    w = LV.LEV_W
+    man = (80.0 * w["ratio"] + 20.0 * w["intensity"]) / (w["ratio"] + w["intensity"])
+    chk(f"按 LEV_W 加权（多空比:强度 = {w['ratio']:g}:{w['intensity']:g}）",
+        np.allclose(LV.temperature(p).dropna(), man), f"读数={LV.temperature(p).iloc[-1]:.1f}")
+    chk("方向腿权重更高（3:1，选法见 leverage.py 注释）", w["ratio"] > w["intensity"])
     p2 = p.copy(); p2.loc[p2.index[-1], "intensity"] = np.nan
     chk("缺一项时按剩余权重归一（不补 50）", abs(LV.temperature(p2).iloc[-1] - 80.0) < 1e-9)
     chk("两项全缺 -> 空", bool(LV.temperature(pd.DataFrame(index=idx)).isna().all()))
