@@ -249,7 +249,7 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
       <div class="card">
         <h3>三类预警各用各的参数</h3>
         <p><strong style="color:var(--ink)">顶是慢过程，底是快事件。</strong>情绪见顶靠多日堆积，过滤毛刺有价值；恐慌见底常是 1–3 天的插针，平滑和多日确认恰好把尖峰削平。用同一套参数必然顾此失彼。</p>
-        <p><strong style="color:var(--ink)">红点</strong>用<em style="font-style:normal;color:var(--ink)">减仓温度</em>（加权，含窄幅逼空）+ 连续3日确认；<strong style="color:var(--ink)">蓝点</strong>用<em style="font-style:normal;color:var(--ink)">快口径温度</em>——六项等权，但换手率、上涨占比、杠杆多空比一律取当日值不平滑——且当日成立即触发；<strong style="color:var(--ink)">黑框</strong>用两个分项的滚动分位 + 3日确认。页面顶部显示的综合温度始终是主口径，减仓温度并列在它下方，快口径只在预警图的悬浮提示里。</p>
+        <p><strong style="color:var(--ink)">红点</strong>用<em style="font-style:normal;color:var(--ink)">减仓温度</em>（加权，含窄幅逼空）+ 连续3日确认；<strong style="color:var(--ink)">蓝点</strong>用<em style="font-style:normal;color:var(--ink)">快口径温度</em>——六项等权，但换手率、上涨占比、杠杆多空比一律取当日值不平滑——且当日成立即触发；<strong style="color:var(--ink)">黑框</strong>用 TOP2 抱团分位 + 窄幅逼空评分 + 3日确认（原橙线预警已并入此条）。页面顶部显示的综合温度始终是主口径，减仓温度并列在它下方，快口径只在预警图的悬浮提示里。</p>
         <p><strong style="color:var(--ink)">为什么红点要单独一套合成：</strong>综合温度被同时要求标顶和标底，而这两件事靠的不是同一批因子。实测判别力最强的窄幅逼空评分（秩相关 −0.348）原先根本不在温度里，而上涨占比与站上MA20 相关 0.84、是同一个东西量两遍却占掉温度方差的 38%。拆开后红点触发后 3 个月由 +3.2% 降到 −1.8%、为负比例由 34% 升到 59%（基准 +5.2%／27%）。</p>
       </div>
       <div class="card">
@@ -445,7 +445,9 @@ function drawTemp(){
 const AL = D.alerts || {rules:[], flags:{}, counts:{}};
 const FAST = D.series.temperature_fast || null;   // 快口径温度（不平滑），蓝点预警据此判定
 const SELLT = D.series.temperature_sell || null;  // 减仓温度（加权，含窄幅逼空），红点预警据此判定
-const NSCORE = D.series.narrow_score || null;     // 窄幅逼空评分，橙三角预警据此判定
+const NSCORE = D.series.narrow_score || null;     // 窄幅逼空评分，黑框预警的分项之一
+const LEV = D.series.leverage || null;             // 杠杆资金多空比（原始值）
+const LEVP = D.series.leverage_pct || null;       // 其 252 日滚动分位，黑框预警据此判定
 const NDX = D.series.ndx;
 function drawNdx(){
   const svg = $("cNdx");
@@ -550,6 +552,8 @@ function drawNdx(){
       (SELLT && SELLT[A+i] != null ? `<br><span style="color:#56687D">减仓温度 ${SELLT[A+i].toFixed(1)}（红点用）</span>` : "") +
       (FAST && FAST[A+i] != null ? `<br><span style="color:#56687D">快口径 ${FAST[A+i].toFixed(1)}（蓝点用）</span>` : "") +
       (NSCORE && NSCORE[A+i] != null ? `<br><span style="color:#56687D">窄幅评分 ${NSCORE[A+i].toFixed(0)}</span>` : "") +
+      (LEV && LEV[A+i] != null ? `<br><span style="color:#56687D">杠杆多空比 ${LEV[A+i].toFixed(1)}`
+        + (LEVP && LEVP[A+i] != null ? `（分位 ${LEVP[A+i].toFixed(0)}）` : "") + `</span>` : "") +
       (hit.length ? "<br>" + hit.map(q => {
         const g = q.mark === "box" ? "▢" : q.mark === "line" ? "▬" : (q.hollow ? "○" : "●");
         return `<span style="color:${q.mark === "box" ? "#C6D3E0" : q.color}">${g} ${q.name}</span>`;

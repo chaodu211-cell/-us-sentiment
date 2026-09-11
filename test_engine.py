@@ -171,7 +171,7 @@ def t_narrow_neutral():
 
 
 def t_alert_wiring():
-    """红点走减仓温度、蓝点走 COLD_TH、黑框走 CROWD_* —— 阈值确实被接上了。"""
+    """红点走减仓温度、蓝点走 COLD_TH、黑框走 CROWD_TOP2/CROWD_NARROW —— 阈值确实被接上了。"""
     import pandas as pd, numpy as np, engine as E
     n = 60
     idx = pd.bdate_range("2021-01-01", periods=n)
@@ -198,16 +198,27 @@ def t_alert_wiring():
     chk("VIX 差一点就不触发蓝点",
         not E.build_alerts(calm, pd.DataFrame(index=idx), vix=pd.Series(E.VIX_COLD - 0.1, index=idx),
                            temp_fast=pd.Series(E.COLD_TH - 1, index=idx), ndx=px)["cold"].any())
-    # 黑框：分位刚好跨过 CROWD_TOP2 / CROWD_LEV
-    cp = pd.DataFrame({"top2": pd.Series(E.CROWD_TOP2 + 1, index=idx),
-                       "leverage": pd.Series(E.CROWD_LEV + 1, index=idx)})
-    cp_lo = pd.DataFrame({"top2": pd.Series(E.CROWD_TOP2 - 1, index=idx),
-                          "leverage": pd.Series(E.CROWD_LEV + 1, index=idx)})
-    chk("黑框门槛用 CROWD_TOP2/CROWD_LEV（越过则触发）",
-        bool(E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp, ndx=px)["crowd"]
+    # 黑框：TOP2 抱团分位 > CROWD_TOP2 且 窄幅逼空评分 > CROWD_NARROW，两项刚好跨过门槛
+    cp    = pd.DataFrame({"top2": pd.Series(E.CROWD_TOP2 + 1, index=idx)})
+    cp_lo = pd.DataFrame({"top2": pd.Series(E.CROWD_TOP2 - 1, index=idx)})
+    nr    = pd.Series(E.CROWD_NARROW + 1, index=idx)
+    nr_lo = pd.Series(E.CROWD_NARROW - 1, index=idx)
+    chk("黑框门槛用 CROWD_TOP2/CROWD_NARROW（越过则触发）",
+        bool(E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp, narrow=nr, ndx=px)["crowd"]
              .iloc[E.PERSIST:].all()))
-    chk("黑框：抱团分位不够则不触发",
-        not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp_lo, ndx=px)["crowd"].any())
+    chk("黑框：窄幅评分不够则不触发",
+        not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp,
+                           narrow=nr_lo, ndx=px)["crowd"].any())
+    chk("黑框：TOP2 抱团分位不够则不触发",
+        not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp_lo,
+                           narrow=nr, ndx=px)["crowd"].any())
+    chk("黑框：拿不到窄幅评分时不触发",
+        not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp, ndx=px)["crowd"].any())
+    # 橙线已取消：规则表里不应再有它，build_alerts 也不应再产出该键
+    chk("橙线预警已取消（ALERTS 中无 narrow）",
+        not any(r["key"] == "narrow" for r in E.ALERTS))
+    chk("橙线预警已取消（build_alerts 不产出 narrow）",
+        "narrow" not in E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp, narrow=nr, ndx=px))
     # 确认天数：第 PERSIST 天才置位，之前为假（无前视）
     chk(f"红点需连续 {E.PERSIST} 日才置位",
         (not al["hot"].iloc[:E.PERSIST - 1].any()) and bool(al["hot"].iloc[E.PERSIST - 1]))
