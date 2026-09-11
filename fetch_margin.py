@@ -8,13 +8,22 @@ FINRA 月频保证金统计 → raw/_margin.csv（研报 Fig 4 的口径），�
 
     https://www.finra.org/investors/insights/investing/margin-statistics
 
-⚠️ 必读：**这个脚本的在线下载地址没有在开发环境里验证过**（当时会话的出口网络封了
-   finra.org，连不上）。表本身是免费的，但 FINRA 换过几次文件路径，所以：
-     · 在线模式是"尽力而为"：抓落地页 → 找页面上的 xlsx/csv 链接 → 下载解析；
-     · **失败不会写坏数据**：解析结果先过量级与单调性校验，不合格直接拒绝写文件；
-     · 永远有一条一定能用的退路：手工从上面那个页面下载文件，然后
+⚠️ 必读：**这个脚本不能在云上跑**。2026-09-11 在 GitHub Actions 上实测过两轮：
+   落地页与直连附件地址（sites/default/files/<YYYY-MM>/margin-statistics.xlsx）
+   **全部 403**，补齐整套浏览器请求头（Accept / Accept-Language / Sec-Fetch-*）也照样 403。
+   0.4 秒就返回，是 WAF 拦截而不是网络不通——FINRA 按云厂商 IP 段封，换头无解。
+   曾为此加过一条 .github/workflows/margin.yml，验证不通后已删除：一条注定每月红一次的
+   定时任务没有价值。
+
+   所以这一项是**本机手动跑**的（住宅/办公网络的 IP 通常不在封禁段里）：
+     · 在线模式：抓落地页 → 找页面上的 xlsx/csv 链接 → 下载解析；落地页打不开时
+       改用按月份构造的附件地址再试一轮；
+     · **失败不会写坏数据**：解析结果先过量级、跨度、新鲜度三关，不合格直接拒绝写文件；
+     · 一定能用的退路：浏览器打开上面那个页面手工下载，然后
            python3 fetch_margin.py --file ~/Downloads/margin-statistics.xlsx
        本地解析同一套代码，不碰网络。
+   产物 raw/_margin.csv 已在 .gitignore 里开了例外，提交上去即可（几 KB，每月一行）。
+   下一次 daily 运行时页面上就会出现这一行读数。
 
 用法：
     python3 fetch_margin.py --check            # 只测连通性，不写文件

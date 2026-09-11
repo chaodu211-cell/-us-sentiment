@@ -229,20 +229,30 @@ GitHub Actions 里可以接 issue、Slack webhook、或者 Server酱之类的微
 反倒是**维持高位**有区分度（温度≥85 且仍贴近 63 日峰值：+1.95%／33%为负）。
 所以这里输出的是**水平温度**，不是拐点信号；页面上把"较峰值回落多少"作为描述列出，但不拿它触发任何预警。
 
-### 打开保证金那一项（可选）
+### 打开保证金那一项（可选，**只能在自己机器上跑**）
 
 ```bash
-python3 fetch_margin.py --check     # 先看能不能连上 FINRA
+python3 fetch_margin.py --check     # 先看能不能连上 FINRA（不写文件）
 python3 fetch_margin.py             # 写 raw/_margin.csv
-# 连不上就手工下载 https://www.finra.org/investors/insights/investing/margin-statistics 上的表：
+# 连不上就用浏览器打开 https://www.finra.org/investors/insights/investing/margin-statistics
+# 手工下载那张表，再本地解析（同一套代码，不碰网络）：
 python3 fetch_margin.py --file ~/Downloads/margin-statistics.xlsx
+
+git add raw/_margin.csv && git commit -m "margin: 更新" && git push   # 下次 daily 就会出现在页面上
 ```
 
-⚠️ **这个脚本的在线下载地址没有在开发环境里验证过**（当时会话的出口网络封了 finra.org）。
-表本身是免费的，但 FINRA 换过几次文件路径，所以脚本是"尽力而为 + 严格校验"：解析结果要过
-量级（融资借方余额中位数落在 2000 亿~3 万亿美元）、跨度、新鲜度三关，不合格**直接拒绝写文件**，
-并提示改用 `--file`。解析与校验这部分是有测试覆盖的（`test_engine.py` 第 17 组），
-没覆盖的只有"那个 URL 今天还对不对"。月频数据跑一次管一个月，所以没有进每日流水线。
+⚠️ **不要指望云端自动抓**。2026-09-11 在 GitHub Actions 上实测过两轮：落地页与直连附件地址
+（`sites/default/files/<YYYY-MM>/margin-statistics.xlsx`）**全部 403**，补齐整套浏览器请求头
+也照样 403，0.4 秒即返回——是 FINRA 的 WAF 按云厂商 IP 段封的，换头无解。为此加过的
+`.github/workflows/margin.yml` 验证不通后已删除（一条注定每月红一次的定时任务没有价值）。
+住宅/办公网络的 IP 通常不在封禁段里，所以这一步放在本机做，每月一次。
+
+脚本本身是"尽力而为 + 严格校验"：解析结果要过量级（融资借方余额中位数落在 2000 亿~3 万亿
+美元）、跨度、新鲜度三关，不合格**直接拒绝写文件**。解析与校验这部分有测试覆盖
+（`test_engine.py` 第 17 组），没覆盖的只有"那个 URL 今天还对不对"。
+
+`raw/` 整体不进 git，但 `raw/_margin.csv` 开了例外（几 KB、每月只变一行；而且它是唯一一个
+**重算不出来、只能下载**的输入，FINRA 只挂当期文件，漏一个月就补不回来）。
 
 文件不在时，页面上少一行读数，**温度与全部预警不受任何影响**。
 
