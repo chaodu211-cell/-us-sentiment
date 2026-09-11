@@ -6,7 +6,11 @@ run.log
 # 提交进 git 会让历史无限膨胀且无法回收——每日 churn 累积一年就是几百MB到GB级，
 # 而且删不掉（除非重写历史）。云端由 .github/workflows/daily.yml 用 actions/cache 缓存，
 # 本地就留在本地。删了也没关系，脚本会自动重新下载。
-raw/
+raw/*
+# 唯一的例外：FINRA 月频保证金统计（研报 Fig 4 的输入）。raw/ 下别的文件都能随时
+# 重下，只有这份不行——FINRA 只挂当期文件，漏一个月就补不回来。几 KB 一份，
+# 每月只变一行，进 git 不会有 churn 问题。由 .github/workflows/margin.yml 维护。
+!raw/_margin.csv
 
 # 手工备份目录与 Pages 构建产物，都不该进仓库
 _backup/
