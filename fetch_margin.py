@@ -45,10 +45,48 @@ DEBIT_MIN_BN, DEBIT_MAX_BN = 200.0, 3000.0
 MIN_ROWS = 24                  # 少于两年的数据不值得写：分位算不出来
 
 
-def get(url, timeout=40):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+# finra.org 挂着 WAF：只带 User-Agent 的请求会被 403 挡掉（2026-09-11 在 GitHub runner 上
+# 实测，落地页 0.4 秒就返回 403 —— 是拦截不是超时）。补齐一整套浏览器请求头再试。
+# 如果仍然 403，那就是按 IP 段封的（云厂商出口），换头没用，只能走 --file 手工路径。
+BROWSER_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "identity",      # 不要 gzip：urllib 不会自动解压
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+
+def get(url, timeout=40, referer=None):
+    h = dict(BROWSER_HEADERS)
+    if referer:
+        h["Referer"] = referer
+        h["Sec-Fetch-Site"] = "same-origin"
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
         return r.read()
+
+
+def guess_urls(months=10):
+    """绕过落地页，直接猜文件地址。
+
+    FINRA 的站点是 Drupal，附件按上传月份分目录：
+        https://www.finra.org/sites/default/files/<YYYY-MM>/margin-statistics.xlsx
+    上传月份 ≈ 数据月份的次月，所以从上个月往前推 months 个月挨个试。
+    这是"落地页打不开时"的退路，不是主路径——文件名 FINRA 改过，主路径仍以页面上的
+    链接为准。
+    """
+    out, d = [], datetime.now().replace(day=1)
+    for _ in range(months):
+        for ext in ("xlsx", "csv"):
+            out.append(f"https://www.finra.org/sites/default/files/{d:%Y-%m}/margin-statistics.{ext}")
+        d = (d - timedelta(days=1)).replace(day=1)
+    return out
 
 
 # ---------- 解析 ----------
@@ -214,29 +252,35 @@ def main():
         src = a.file
     else:
         urls = [a.url] if a.url else []
+        landing_ok = False
         if not urls:
             try:
                 urls = find_link(get(LANDING).decode("utf-8", "replace"))
-                print(f"落地页上找到 {len(urls)} 个候选文件链接")
+                landing_ok = True
+                print(f"落地页打开成功，找到 {len(urls)} 个候选文件链接")
             except Exception as e:
-                print(f"❌ 打不开落地页：{e}")
-                print(f"   退路：手工下载 {LANDING} 上的表，然后 "
-                      f"python3 {os.path.basename(__file__)} --file <下载到的文件>")
-                return 1
+                # 落地页打不开不直接放弃：WAF 拦的往往只是 HTML 页面，
+                # 静态附件走的是另一条路径，值得再试一轮猜出来的地址。
+                print(f"⚠️ 打不开落地页：{e}　→ 改用直接猜文件地址")
+                urls = []
+        if not a.url:
+            urls = urls + guess_urls()
         src = None
-        for u in urls[:6]:
+        for u in urls[:24]:
             try:
-                blob = get(u)
+                blob = get(u, referer=LANDING if landing_ok else None)
                 got = parse_blob(blob, u.lower())
                 if got:
                     recs, src = got, u
                     break
                 print(f"  · {u} 解析不出数据行")
             except Exception as e:
-                print(f"  · {u} 取不到：{str(e)[:80]}")
+                print(f"  · {u} 取不到：{str(e)[:60]}")
         if recs is None:
-            print("❌ 所有候选链接都没拿到可用数据。")
-            print(f"   退路：手工下载 {LANDING} 上的表，然后 "
+            print("❌ 所有候选地址都没拿到可用数据。")
+            print("   若上面全是 403：FINRA 的 WAF 把这台机器挡在外面了（多半按云厂商 IP 段封），"
+                  "换请求头没用。")
+            print(f"   退路：在浏览器里打开 {LANDING} 手工下载那张表，然后 "
                   f"python3 {os.path.basename(__file__)} --file <下载到的文件>")
             return 1
 
