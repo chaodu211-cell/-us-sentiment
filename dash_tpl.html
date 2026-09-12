@@ -179,7 +179,7 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
 
   <div class="hero">
     <div>
-      <div class="hero-label">综合温度</div>
+      <div class="hero-label">红点温度</div>
       <div class="big" id="temp">--</div>
       <div class="regime" id="regime"></div>
       <div class="delta" id="delta"></div>
@@ -229,7 +229,7 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
   <section>
     <h2>分项</h2>
     <p class="sub">每项取过去 252 个交易日的滚动分位，分位越高＝该维度越"热"。迷你图是该项分位的历史走势，中线为 50 分位。
-    右侧标注该项进入哪个温度：<b>综合</b>＝页面顶部那个数（描述市场状态）、<b>减仓</b>＝红点预警据此判定、<b>只看</b>＝不进任何温度。</p>
+    右侧标注该项进入哪个温度：<b>红点</b>＝页面顶部那个数、<b>蓝点</b>＝六项等权那个数、<b>蓝点闸门</b>＝不进温度但参与蓝点判定。</p>
     <div class="rows" id="rows"></div>
   </section>
 
@@ -252,15 +252,15 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
           <li>每个指标计算滚动 <code>252</code> 日分位数，把绝对值转成相对历史水平的百分位。</li>
           <li>ERP 分位取反向 <code>100 − pct</code>，使其与其他指标方向一致（高值＝情绪热）。</li>
           <li><strong style="color:var(--ink)">活跃度指标按市场方向定向</strong>：换手率与杠杆资金对恐慌和狂热同样敏感，方向不可知。对<em style="font-style:normal;color:var(--ink)">高于常态</em>的部分乘以方向系数 <code>d = tanh(r₂₀ / 1.5σ)</code>；低于常态的部分记为中性 50。</li>
-          <li>六个分位数<strong style="color:var(--ink)">等权平均</strong>，得到综合温度（页面顶部那个数，负责<em style="font-style:normal;color:var(--ink)">描述</em>市场状态）。</li>
-          <li>另按 <code>TOP2抱团×2 · 杠杆温度×2 · 上涨拥挤度×3 · 站上MA20×1 · 换手率×1</code> 加权合成<strong style="color:var(--ink)">减仓温度</strong>，只负责<em style="font-style:normal;color:var(--ink)">标顶</em>（红点据此触发）。</li>
+          <li>换手率、TOP2抱团、上涨个股占比、站上MA20、杠杆多空比、风险溢价六项分位<strong style="color:var(--ink)">等权平均</strong>，得到<strong style="color:var(--ink)">蓝点温度</strong>；蓝点看它的当日不平滑口径，熊市反弹看平滑口径。</li>
+          <li>另按 <code>TOP2抱团×2 · 杠杆温度×2 · 上涨拥挤度×3 · 站上MA20×1 · 换手率×1</code> 加权合成<strong style="color:var(--ink)">红点温度</strong>（页面顶部显示的就是它，红点据此触发）。</li>
           <li>按 <span id="bandtxt"></span> 划分五个情绪区间。</li>
         </ol>
       </div>
       <div class="card">
         <h3>三类预警各用各的参数</h3>
         <p><strong style="color:var(--ink)">顶是慢过程，底是快事件。</strong>情绪见顶靠多日堆积，过滤毛刺有价值；恐慌见底常是 1–3 天的插针，平滑和多日确认恰好把尖峰削平。用同一套参数必然顾此失彼。</p>
-        <p><strong style="color:var(--ink)">红点</strong>用<em style="font-style:normal;color:var(--ink)">减仓温度</em>（加权，含上涨拥挤度）+ 连续3日确认；<strong style="color:var(--ink)">蓝点</strong>用<em style="font-style:normal;color:var(--ink)">快口径温度</em>——六项等权，但换手率、上涨占比、杠杆多空比取当日值不平滑——且当日成立即触发；<strong style="color:var(--ink)">黑框</strong>用 TOP2 抱团分位 + 上涨拥挤度 + 3日确认（原橙线预警已并入此条）。页面顶部显示的综合温度始终是主口径，减仓温度并列在它下方，快口径只在预警图的悬浮提示里。</p>
+        <p><strong style="color:var(--ink)">红点</strong>用<em style="font-style:normal;color:var(--ink)">红点温度</em> + 连续3日确认；<strong style="color:var(--ink)">蓝点</strong>用<em style="font-style:normal;color:var(--ink)">蓝点温度的当日口径</em>（换手率、上涨占比、杠杆多空比取当日值不平滑）且当日成立即触发；<strong style="color:var(--ink)">黑框</strong>用 TOP2 抱团分位 + 上涨拥挤度 + 3日确认。页面顶部显示红点温度，蓝点温度并列在它下方。</p>
       </div>
       <div class="card">
         <h3>方向系数 d</h3>
@@ -307,29 +307,31 @@ $("meta").innerHTML = [
 ].map(t => `<span class="chip">${t}</span>`).join("");
 
 /* ---- hero ---- */
-const cur = regOf(D.temperature);
-$("temp").textContent = D.temperature.toFixed(1);
-$("temp").style.color = cur.hex;
-$("regime").innerHTML = `<span class="dot" style="background:${cur.hex}"></span>${cur.name}`;
-const S = D.series.temperature, N = S.length;
-const d5 = N > 5 ? D.temperature - S[N-6] : null;
-const d20 = N > 20 ? D.temperature - S[N-21] : null;
-// 减仓温度与综合温度是两个不同的数：综合温度描述市场状态，减仓温度只负责标顶。
-// 用门槛而不是五档配色——它的分布与综合温度不同，套同一套语义会误导。
-const sellTxt = D.temperature_sell == null ? "" :
-  `减仓温度 <span style="color:${D.temperature_sell > D.sell_threshold ? "#CE5A4E" : "var(--ink)"}">` +
-  `${D.temperature_sell.toFixed(1)}</span>` +
-  `<span style="color:var(--ink3)">／${D.sell_threshold.toFixed(0)} 红点门槛</span>`;
-$("rawnote").innerHTML = [
-  sellTxt,
-  D.temperature_raw == null ? "" :
-    `原始口径 <span style="color:${regOf(D.temperature_raw).hex}">${D.temperature_raw.toFixed(1)} · ${D.regime_raw}</span>` +
-    `<span style="color:var(--ink3)">（未做方向修正）</span>`
-].filter(Boolean).join("　");
+/* 页面上只有两个温度：
+     红点温度 = TOP2×2 + 杠杆温度×2 + 上涨拥挤度×3 + MA20×1 + 换手率×1（加权分位），红点据此触发；
+     蓝点温度 = 六项等权，蓝点看它的当日不平滑口径，熊市反弹看平滑口径。
+   主显示是红点温度；拿不到时（历史前段上涨拥挤度还没预热完）退回显示蓝点温度。 */
+const HEROV = D.temperature_sell != null ? D.temperature_sell : D.temperature;
+const HEROS = (D.series.temperature_sell && D.series.temperature_sell.some(v => v != null))
+  ? D.series.temperature_sell : D.series.temperature;
+const cur = regOf(HEROV);
+$("temp").textContent = HEROV.toFixed(1);
+$("temp").style.color = HEROV > (D.sell_threshold || 75) ? "#CE5A4E" : cur.hex;
+$("regime").innerHTML = `<span class="dot" style="background:${cur.hex}"></span>${cur.name}`
+  + `<span style="color:var(--ink3)">　红点门槛 ${(D.sell_threshold || 75).toFixed(0)}</span>`;
+const S = HEROS, N = S.length;
+const vAt = k => { for (let i = N-1-k; i >= 0; i--) if (S[i] != null) return S[i]; return null; };
+const d5 = vAt(5), d20 = vAt(20);
+const blueTxt = D.temperature == null ? "" :
+  `蓝点温度 <span style="color:${regOf(D.temperature).hex}">${D.temperature.toFixed(1)} · ${D.regime}</span>` +
+  (D.temperature_fast == null ? "" :
+    `<span style="color:var(--ink3)">（当日口径 ${D.temperature_fast.toFixed(1)}，蓝点据此判定）</span>`);
+$("rawnote").innerHTML = blueTxt;
+const valid = S.filter(v => v != null);
 $("delta").textContent = [
-  d5  !== null ? `5日 ${d5>0?"+":""}${d5.toFixed(1)}`   : "",
-  d20 !== null ? `20日 ${d20>0?"+":""}${d20.toFixed(1)}` : "",
-  `区间 ${Math.min(...S).toFixed(1)}–${Math.max(...S).toFixed(1)}`
+  d5  !== null ? `5日 ${HEROV-d5>0?"+":""}${(HEROV-d5).toFixed(1)}`   : "",
+  d20 !== null ? `20日 ${HEROV-d20>0?"+":""}${(HEROV-d20).toFixed(1)}` : "",
+  valid.length ? `区间 ${Math.min(...valid).toFixed(1)}–${Math.max(...valid).toFixed(1)}` : ""
 ].filter(Boolean).join("   ·   ");
 
 $("band").innerHTML = R.map(r => `<div style="background:${r.hex};opacity:${r===cur?1:.28}"></div>`).join("");
@@ -411,17 +413,25 @@ function drawTemp(){
       "font-size":10.5, "font-family":"IBM Plex Mono, monospace"});
     t.textContent = longSpan ? D2[i].slice(0,7) : fmtDate(D2[i]); svg.appendChild(t);
   });
-  // area + line
-  const pts = S2.map((v,i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
+  // area + line（红点温度前段有空值——上涨拥挤度要预热，跳过不画）
+  const ok = S2.map((v,i) => [v,i]).filter(([v]) => v != null);
+  const pts = ok.map(([v,i]) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
+  const iFirst = ok.length ? ok[0][1] : 0, iLast = ok.length ? ok[ok.length-1][1] : 0;
+  const vLast = ok.length ? ok[ok.length-1][0] : 0;
+  // 蓝点温度作参考线（细、低对比），方便两个数对照
+  const BS = (D.series.temperature || []).slice(A, Bx);
+  const bpts = BS.map((v,i) => v == null ? null : `${x(i).toFixed(2)},${y(v).toFixed(2)}`).filter(Boolean).join(" ");
+  if (bpts) svg.appendChild(el("polyline", {points:bpts, fill:"none", stroke:"#3D7FB8",
+    "stroke-width":1, opacity:.45, "stroke-linejoin":"round"}));
   const grad = el("linearGradient", {id:"g1", x1:0, y1:0, x2:0, y2:1});
   grad.appendChild(el("stop", {offset:"0%",   "stop-color":cur.hex, "stop-opacity":.30}));
   grad.appendChild(el("stop", {offset:"100%", "stop-color":cur.hex, "stop-opacity":.02}));
   const defs = el("defs", {}); defs.appendChild(grad); svg.appendChild(defs);
-  svg.appendChild(el("polygon", {points:`${x(0)},${y(0)} ${pts} ${x(N2-1)},${y(0)}`, fill:"url(#g1)"}));
+  if (pts) svg.appendChild(el("polygon", {points:`${x(iFirst)},${y(0)} ${pts} ${x(iLast)},${y(0)}`, fill:"url(#g1)"}));
   svg.appendChild(el("polyline", {points:pts, fill:"none", stroke:cur.hex,
     "stroke-width": N2 > 1200 ? 1.1 : N2 > 500 ? 1.5 : 2,
     "stroke-linejoin":"round", "stroke-linecap":"round"}));
-  svg.appendChild(el("circle", {cx:x(N2-1), cy:y(S2[N2-1]), r:4.5, fill:cur.hex,
+  if (ok.length) svg.appendChild(el("circle", {cx:x(iLast), cy:y(vLast), r:4.5, fill:cur.hex,
     stroke:"#111823", "stroke-width":2}));
 
   // hover
@@ -436,15 +446,19 @@ function drawTemp(){
     let i = Math.round((px - M.l) / iw * (N2 - 1));
     i = Math.max(0, Math.min(N2 - 1, i));
     cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", .55);
-    hov.setAttribute("cx", x(i)); hov.setAttribute("cy", y(S2[i])); hov.setAttribute("opacity", 1);
-    const r = regOf(S2[i]), gi = A + i;
+    const gi = A + i, sv = S2[i];
+    if (sv == null){ hov.setAttribute("opacity", 0); tip.style.opacity = 0; return; }
+    hov.setAttribute("cx", x(i)); hov.setAttribute("cy", y(sv)); hov.setAttribute("opacity", 1);
+    const r = regOf(sv);
+    const bv = (D.series.temperature || [])[gi];
     tip.innerHTML = `<span style="color:#8DA2B8">${D2[i]}</span><br>` +
-      `<span style="color:${r.hex}">● </span>温度 ${S2[i].toFixed(1)} · ${r.name}` +
+      `<span style="color:${r.hex}">● </span>红点温度 ${sv.toFixed(1)} · ${r.name}` +
+      (bv == null ? "" : `<br><span style="color:#3D7FB8">● </span>蓝点温度 ${bv.toFixed(1)}`) +
       (D.series.spx && D.series.spx[gi] ? `<br><span style="color:#8DA2B8">标普500 ${Math.round(D.series.spx[gi])}</span>` : "");
     tip.style.opacity = 1;
     const lft = x(i) / W * bb.width;
     tip.style.left = Math.min(bb.width - 160, Math.max(0, lft + 12)) + "px";
-    tip.style.top = (y(S2[i]) / H * bb.height - 10) + "px";
+    tip.style.top = (y(sv) / H * bb.height - 10) + "px";
   });
   svg.addEventListener("pointerleave", () => {
     cross.setAttribute("opacity", 0); hov.setAttribute("opacity", 0); tip.style.opacity = 0;
@@ -453,8 +467,8 @@ function drawTemp(){
 
 /* ---- 纳斯达克走势 + 预警点位 ---- */
 const AL = D.alerts || {rules:[], flags:{}, counts:{}};
-const FAST = D.series.temperature_fast || null;   // 快口径温度（不平滑），蓝点预警据此判定
-const SELLT = D.series.temperature_sell || null;  // 减仓温度（加权，含上涨拥挤度），红点预警据此判定
+const FAST = D.series.temperature_fast || null;   // 蓝点温度的当日口径（不平滑），蓝点预警据此判定
+const SELLT = D.series.temperature_sell || null;  // 红点温度（加权，含上涨拥挤度），红点预警据此判定
 const NSCORE = D.series.narrow_score || null;     // 上涨拥挤度，黑框预警的分项之一
 const LEV = D.series.leverage || null;             // 杠杆资金多空比（原始值）
 const LEVP = D.series.leverage_pct || null;       // 其 252 日滚动分位，黑框预警据此判定
@@ -559,8 +573,8 @@ function drawNdx(){
     tip.innerHTML = `<span style="color:#8DA2B8">${D2[i]}</span><br>` +
       `QQQ ${sp[i].toFixed(2)}` + (vx != null ? `　VIX ${vx.toFixed(1)}` : "") + `<br>` +
       `<span style="color:${rg.hex}">● </span>温度 ${Sl[i].toFixed(1)} · ${rg.name}` +
-      (SELLT && SELLT[A+i] != null ? `<br><span style="color:#56687D">减仓温度 ${SELLT[A+i].toFixed(1)}（红点用）</span>` : "") +
-      (FAST && FAST[A+i] != null ? `<br><span style="color:#56687D">快口径 ${FAST[A+i].toFixed(1)}（蓝点用）</span>` : "") +
+      (SELLT && SELLT[A+i] != null ? `<br><span style="color:#56687D">红点温度 ${SELLT[A+i].toFixed(1)}</span>` : "") +
+      (FAST && FAST[A+i] != null ? `<br><span style="color:#56687D">蓝点温度·当日口径 ${FAST[A+i].toFixed(1)}</span>` : "") +
       (NSCORE && NSCORE[A+i] != null ? `<br><span style="color:#56687D">上涨拥挤度 ${NSCORE[A+i].toFixed(0)}</span>` : "") +
       (LEV && LEV[A+i] != null ? `<br><span style="color:#56687D">杠杆多空比 ${LEV[A+i].toFixed(1)}`
         + (LEVP && LEVP[A+i] != null ? `（分位 ${LEVP[A+i].toFixed(0)}）` : "") + `</span>` : "") +
@@ -652,12 +666,10 @@ function segments(f){
     + (M.chg == null ? "" : `（6个月 ${M.chg >= 0 ? "+" : ""}${M.chg.toFixed(2)}pp）`)
     + ` · ${M.repricing ? "<b style=\"color:#D19A3E\">处于贴现率重估状态，蓝点降级为空心</b>"
                         : "不处于贴现率重估状态，蓝点按实心计"}`);
-  // 红点始终看减仓温度（与是否熊市无关）；熊市反弹预警是另一条规则，只在确认的下行趋势里启用，
-  // 它看的是页面顶部那个综合温度、门槛 BR.th。两者别混着说——这行以前写的"过热门槛为 80"
-  // 在红点改用减仓温度之后就不成立了。
-  const redTxt = D.sell_threshold == null ? `综合温度 > ${B[3]}` : `减仓温度 > ${D.sell_threshold.toFixed(0)}`;
+  // 红点看红点温度；熊市反弹是另一条规则，看蓝点温度、门槛 BR.th。两者别混着说。
+  const redTxt = D.sell_threshold == null ? `蓝点温度 > ${B[3]}` : `红点温度 > ${D.sell_threshold.toFixed(0)}`;
   if (BR) bits.push(BR.now
-    ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下，熊市反弹预警已启用：综合温度 > ${BR.th} 即预警</b>`
+    ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下，熊市反弹预警已启用：蓝点温度 > ${BR.th} 即预警</b>`
       + `（红点仍看${redTxt}）`
     : `纳指未跌破下行的 ${BR.ma} 日均线，熊市反弹预警不启用 · 红点看${redTxt}`);
   $("macrobar").innerHTML = bits.length ? "当前宏观状态：" + bits.join("　|　") : "";
@@ -800,11 +812,11 @@ $("foot").innerHTML = `数据源：stockanalysis.com（${D.coverage.stocks} 只�
 
 const LIMITS = [
   ["跨年度的温度不可直接比较", "滚动 252 日分位只跟<b>过去一年</b>比。2023 年的 80 分和 2021 年的 80 分不是一回事。试过扩张窗口与更长的滚动窗口：描述变准了，但对未来三个月的判别力同时消失（触发后纳指 +5.56%，基准 +5.22%），所以保留 252 日口径。看的时候要带着这个前提。"],
-  ["对阴跌型熊市迟钝", "这套方法衡量的是「相对最近一年有多绷」。急跌型崩盘（2018Q4、2020、2025）读数到位；阴跌久了，坏就变成新常态——2022-10 熊市底综合温度仍读 <b>31.6</b>，没进恐慌区。那类下跌由贴现率驱动，情绪见底不等于价格见底，改由空心蓝点与熊市反弹预警在信号层兜。"],
+  ["对阴跌型熊市迟钝", "这套方法衡量的是「相对最近一年有多绷」。急跌型崩盘（2018Q4、2020、2025）读数到位；阴跌久了，坏就变成新常态——2022-10 熊市底蓝点温度仍读 <b>31.6</b>，没进恐慌区。那类下跌由贴现率驱动，情绪见底不等于价格见底，改由空心蓝点与熊市反弹预警在信号层兜。"],
   ["2022 年的蓝点会连着叫，而且都在半山腰", "按事件聚类：<b>非 2022 的 4 次，触发后 3 个月平均 +24.6%、4 战全胜</b>；<b>2022 的 5 次，平均 −2.2%、胜率 40%</b>。处理办法是空心蓝点——10年期TIPS实际利率 &lt; 0.5% 且 6 个月上行 &gt; 0.25pp 时把蓝点降级为分批。实测把 2022 那批精确劈开：13 个空心日后续 −4.7%／胜率 23%，23 个实心日 +26.7%／胜率 96%。<b>但这条规则判别的宏观状态在样本里只出现过一次</b>，等于零样本外验证，所以它只降级、不屏蔽。"],
   ["减仓侧的边际在样本后半段衰减", "红点触发后 3 个月：2017–2021 <b>−5.33%</b>（该段基准 +5.70%），2022–2026 <b>+0.38%</b>（基准 +4.68%）。优势从 11.0 个百分点缩到 4.3 个。方向仍一致，但<b>别按全样本数字设仓位</b>。加仓侧（蓝点）两段都稳（+24.5%／+21.6%），比减仓侧可靠得多。"],
   ["杠杆温度只在最热的一档有用", "十分位表：最高十分位后续 3 个月 <b>−0.4%／46% 为负</b>（基准 +5.2%／26%），其余九档都在 +4.9% ~ +7.6% 之间，没有单调性。<b>当极端读数报警器用，别当连续打分用。</b>"],
-  ["上涨拥挤度只在上涨市有定义", "它量的是「指数创新高的同时宽度崩坏」，下跌市里这个形态无意义，合成减仓温度时记为中性 50。黑框预警因此也只在上涨市出现。"],
+  ["上涨拥挤度只在上涨市有定义", "它量的是「指数创新高的同时宽度崩坏」，下跌市里这个形态无意义，合成红点温度时记为中性 50。黑框预警因此也只在上涨市出现。"],
   ["有 5 个「该减仓」的窗口一直漏", "2021-02、2022-01~05、2022-11、2025-12~2026-02、2026-06。这些是宏观／事件驱动的下跌，量价情绪在事前确实没有信号。这是这类工具的结构性边界，为补这几段去加因子必然是过拟合。"],
   ["成分股名单有幸存者偏差", "用<b>当前</b>的 503 只成分股回溯十年，期间被剔除的公司（破产、被并购、跌出指数）不在样本里，历史时段的宽度读数因此略偏高。消除它需要逐月的历史成分股名单。"],
   ["几处口径上的将就", "换手率缺逐日股本数据，用「篮子成交额 ÷ 篮子价格和」近似；ERP 的每股收益是月频（multpl.com）前向填充到日频，指数用 SPY×10 换算；近年新纳入的成分股只有上市以来的数据，早期年份实际样本数少于 503。"],
