@@ -1,0 +1,9 @@
+# .command 是 macOS 上双击即可运行的 shell 脚本。
+# 必须保证是 LF 换行：一旦被 Windows 编辑器改成 CRLF，双击时会报
+# "bad interpreter: /bin/bash^M"，而且报错信息完全看不出是换行的问题。
+*.command text eol=lf
+*.sh      text eol=lf
+
+# Python 与网页模板同理，统一 LF
+*.py      text eol=lf
+*.html    text eol=lf
