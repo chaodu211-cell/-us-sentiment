@@ -217,11 +217,13 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
     <div class="chart-box"><div style="position:relative"><svg id="cNdx" role="img" aria-label="纳斯达克100走势与情绪预警点位"></svg><div id="tip2"></div></div></div>
     <p class="sub" id="macrobar" style="margin:14px 0 0"></p>
     <div id="rrbox" class="chart-box" style="display:none;margin-top:8px">
-      <svg id="cRR" role="img" aria-label="10年期实际利率与贴现率重估状态"></svg>
+      <svg id="cRR" role="img" aria-label="10年期实际利率与快速抬升期"></svg>
       <p class="sub" style="margin:6px 0 0;font-size:11px">
-        10年期TIPS实际利率（美国财政部日频）。橙色底纹＝贴现率重估状态：水位在虚线
-        <b id="rrlvl"></b> 以下、且较 126 个交易日（约 6 个月）前上行超过 <b id="rrrise"></b>，带滞回。
-        此状态内的蓝点画成空心。</p>
+        10年期TIPS实际利率（美国财政部日频）。橙色底纹＝<b>实际利率快速抬升期</b>：
+        较 <b id="rrwin"></b> 个交易日（约 6 个月）前的变动，落在它自己过去
+        <b id="rrpctwin"></b> 年分布的 <b id="rrpct"></b> 分位以上<span id="rrnom"></span>，
+        带滞回（分位跌回 <b id="rrexit"></b> 以下才退出）。判的是<b>抬升速度</b>而非水位高低——
+        水位门槛是零利率年代的刻度，换个利率环境就失效。此状态内的蓝点画成空心。</p>
     </div>
     <div id="alegend" class="alegend"></div>
   </section>
@@ -592,14 +594,21 @@ function drawNdx(){
   });
 }
 
-/* 实际利率条：与纳指图同一时间轴，橙色底纹标出贴现率重估状态 */
+/* 实际利率条：与纳指图同一时间轴，橙色底纹标出实际利率快速抬升期 */
 function drawRR(){
-  const RR = D.series.real_rate, M0 = D.macro;
+  const RR = D.series.real_rate, M0 = D.macro, ST = D.series.repricing;
   const box = $("rrbox"), svg = $("cRR");
-  if (!RR || !M0) { box.style.display = "none"; return; }
+  // ST 缺失 = 这份 data.json 是旧引擎产出的。宁可整块不画，也不要画一条
+  // 没有底纹的利率线——那看起来像"从未进入过快速抬升期"，是个会骗人的空图。
+  if (!RR || !M0 || !ST) { box.style.display = "none"; return; }
   box.style.display = "";
-  $("rrlvl").textContent = M0.level_th + "%";
-  $("rrrise").textContent = M0.rise_th + " 个百分点";
+  $("rrwin").textContent = M0.win;
+  $("rrpctwin").textContent = (M0.pct_win / 252).toFixed(0);
+  $("rrpct").textContent = M0.pct_th;
+  $("rrexit").textContent = M0.pct_exit;
+  // 名义同向那一条挡掉的是 2020-03 那种通胀预期崩塌型上行（名义在跌，实际在涨）
+  $("rrnom").innerHTML = M0.need_nominal
+    ? "，且同期名义10年期美债也在上行（通胀预期崩塌造成的实际利率上行不算紧缩）" : "";
   svg.innerHTML = "";
   const A = RSTART, Bx = REND + 1, v = RR.slice(A, Bx), D2 = D.series.dates.slice(A, Bx), N2 = v.length;
   const h = 118, m = {t:12, r:14, b:22, l:52};
@@ -608,23 +617,13 @@ function drawRR(){
   const iw = W - m.l - m.r, ih = h - m.t - m.b;
   const ok = v.filter(z => z != null);
   if (!ok.length) { box.style.display = "none"; return; }
-  const lo = Math.min(...ok, M0.level_th), hi = Math.max(...ok, M0.level_th), pad = (hi - lo) * .12 || .2;
+  const lo = Math.min(...ok), hi = Math.max(...ok), pad = (hi - lo) * .12 || .2;
   const x = i => m.l + (N2 === 1 ? iw/2 : i / (N2 - 1) * iw);
   const y = z => m.t + (1 - (z - lo + pad) / (hi - lo + 2*pad)) * ih;
 
-  // 重估状态底纹：与空心蓝点同源——直接由 flags 反推会漏掉没有蓝点的日子，
-  // 故用页面自己按同一规则（含滞回）重算的状态序列。
-  const st = [];
-  let on = false;
-  for (let i = 0; i < RR.length; i++){
-    const z = RR[i], z6 = i >= M0.win ? RR[i - M0.win] : null;
-    if (z != null && z6 != null){
-      const c = z - z6;
-      if (on) { if (z >= M0.level_th || c < -M0.rise_th) on = false; }
-      else if (z < M0.level_th && c > M0.rise_th) on = true;
-    }
-    st.push(on);
-  }
+  // 底纹＝引擎下发的状态序列（与空心蓝点同源）。页面不自己重算：
+  // 3 年滚动分位要用展示窗口之外的历史，前端根本算不出来；何况同一条规则写两份迟早走样。
+  const st = ST;
   let a = null;
   const flush = b => { if (a === null) return;
     svg.appendChild(el("rect", {x:x(a), y:m.t, width:Math.max(1.2, x(b)-x(a)), height:ih,
@@ -632,12 +631,14 @@ function drawRR(){
   st.slice(A, Bx).forEach((z,i) => { if (z && a === null) a = i; else if (!z && a !== null) flush(i-1); });
   if (a !== null) flush(N2 - 1);
 
-  [lo, M0.level_th, hi].forEach((z,k) => {
+  // 中线取 0（零实际利率是有意义的分界）；若 0 不在范围内则退回上下界的中点
+  const mid = (lo <= 0 && hi >= 0) ? 0 : (lo + hi) / 2;
+  [lo, mid, hi].forEach((z,k) => {
     svg.appendChild(el("line", {x1:m.l, x2:m.l+iw, y1:y(z), y2:y(z),
-      stroke: k === 1 ? "#D19A3E" : "#2A3B4F", "stroke-width": k === 1 ? 1 : .6,
+      stroke:"#2A3B4F", "stroke-width": k === 1 ? .8 : .6,
       "stroke-dasharray": k === 1 ? "4 3" : "", opacity:.6}));
     const t = el("text", {x:m.l-7, y:y(z)+3.5, "text-anchor":"end",
-      fill: k === 1 ? "#D19A3E" : "#56687D", "font-size":10, "font-family":"IBM Plex Mono, monospace"});
+      fill:"#56687D", "font-size":10, "font-family":"IBM Plex Mono, monospace"});
     t.textContent = z.toFixed(1); svg.appendChild(t);
   });
   const longSpan = N2 > 400;
@@ -663,9 +664,10 @@ function segments(f){
 (() => {
   const M = D.macro, BR = D.bear, bits = [];
   if (M) bits.push(`10年期实际利率 <b>${M.real_rate == null ? "—" : M.real_rate.toFixed(2) + "%"}</b>`
-    + (M.chg == null ? "" : `（6个月 ${M.chg >= 0 ? "+" : ""}${M.chg.toFixed(2)}pp）`)
-    + ` · ${M.repricing ? "<b style=\"color:#D19A3E\">处于贴现率重估状态，蓝点降级为空心</b>"
-                        : "不处于贴现率重估状态，蓝点按实心计"}`);
+    + (M.chg == null ? "" : `（6个月 ${M.chg >= 0 ? "+" : ""}${M.chg.toFixed(2)}pp`
+        + (M.pct == null ? "" : `，自身3年分位 ${M.pct.toFixed(0)}`) + "）")
+    + ` · ${M.repricing ? "<b style=\"color:#D19A3E\">处于实际利率快速抬升期，蓝点降级为空心</b>"
+                        : "不处于实际利率快速抬升期，蓝点按实心计"}`);
   // 红点看红点温度；熊市反弹是另一条规则，看蓝点温度、门槛 BR.th。两者别混着说。
   const redTxt = D.sell_threshold == null ? `蓝点温度 > ${B[3]}` : `红点温度 > ${D.sell_threshold.toFixed(0)}`;
   if (BR) bits.push(BR.now
@@ -813,7 +815,7 @@ $("foot").innerHTML = `数据源：stockanalysis.com（${D.coverage.stocks} 只�
 const LIMITS = [
   ["跨年度的温度不可直接比较", "滚动 252 日分位只跟<b>过去一年</b>比。2023 年的 80 分和 2021 年的 80 分不是一回事。试过扩张窗口与更长的滚动窗口：描述变准了，但对未来三个月的判别力同时消失（触发后纳指 +5.56%，基准 +5.22%），所以保留 252 日口径。看的时候要带着这个前提。"],
   ["对阴跌型熊市迟钝", "这套方法衡量的是「相对最近一年有多绷」。急跌型崩盘（2018Q4、2020、2025）读数到位；阴跌久了，坏就变成新常态——2022-10 熊市底蓝点温度仍读 <b>31.6</b>，没进恐慌区。那类下跌由贴现率驱动，情绪见底不等于价格见底，改由空心蓝点与熊市反弹预警在信号层兜。"],
-  ["2022 年的蓝点会连着叫，而且都在半山腰", "按事件聚类：<b>非 2022 的 4 次，触发后 3 个月平均 +24.6%、4 战全胜</b>；<b>2022 的 5 次，平均 −2.2%、胜率 40%</b>。处理办法是空心蓝点——10年期TIPS实际利率 &lt; 0.5% 且 6 个月上行 &gt; 0.25pp 时把蓝点降级为分批。实测把 2022 那批精确劈开：13 个空心日后续 −4.7%／胜率 23%，23 个实心日 +26.7%／胜率 96%。<b>但这条规则判别的宏观状态在样本里只出现过一次</b>，等于零样本外验证，所以它只降级、不屏蔽。"],
+  ["2022 年的蓝点会连着叫，而且都在半山腰", "按事件聚类：<b>非 2022 的 4 次，触发后 3 个月平均 +24.6%、4 战全胜</b>；<b>2022 的 5 次，平均 −2.2%、胜率 40%</b>。处理办法是空心蓝点——处于<b>实际利率快速抬升期</b>（10年期TIPS实际利率的 6 个月变动排进自身过去 3 年的前 15%，且名义10年期美债同向上行）时把蓝点降级为分批。实测把 2022 那批精确劈开：14 个空心日后续 −7.6%／胜率 7%，28 个实心日 +28.2%／胜率 100%。旧口径靠「实际利率 &lt; 0.5%」这个零利率年代的水位门槛，实际利率涨到 2.6% 之后已经永远不可能再成立；改看抬升<b>速度</b>才跨得过利率环境。<b>但这条规则判别的宏观状态在样本里仍然只出现过一次</b>（2021下半年–2022），等于零样本外验证，所以它只降级、不屏蔽。"],
   ["减仓侧的边际在样本后半段衰减", "红点触发后 3 个月：2017–2021 <b>−5.33%</b>（该段基准 +5.70%），2022–2026 <b>+0.38%</b>（基准 +4.68%）。优势从 11.0 个百分点缩到 4.3 个。方向仍一致，但<b>别按全样本数字设仓位</b>。加仓侧（蓝点）两段都稳（+24.5%／+21.6%），比减仓侧可靠得多。"],
   ["杠杆温度只在最热的一档有用", "十分位表：最高十分位后续 3 个月 <b>−0.4%／46% 为负</b>（基准 +5.2%／26%），其余九档都在 +4.9% ~ +7.6% 之间，没有单调性。<b>当极端读数报警器用，别当连续打分用。</b>"],
   ["上涨拥挤度只在上涨市有定义", "它量的是「指数创新高的同时宽度崩坏」，下跌市里这个形态无意义，合成红点温度时记为中性 50。黑框预警因此也只在上涨市出现。"],
