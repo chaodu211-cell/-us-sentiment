@@ -1223,6 +1223,12 @@ def main():
         nom = align_to(nom_full, have.index)
         spd = align_to(real_rate_speed_pct(rr_full), have.index)
         lvl = align_to(real_rate_level_pct(rr_full), have.index)
+        # 两条分位也下发：页面在实际利率图上悬浮读数要用（只有引擎算得出来——
+        # 5 年水位分位需要展示窗口之外的历史）
+        for key, ser in (("rr_pct", spd), ("rr_lvl_pct", lvl)):
+            if ser is not None:
+                out["series"][key] = [None if not np.isfinite(v) else round(float(v), 1)
+                                      for v in ser.values]
         def _v(s2, nd=2):
             if s2 is None or not np.isfinite(s2.loc[last]):
                 return None

@@ -165,7 +165,10 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
 .levbig b{font-family:var(--mono);font-size:46px;font-weight:300;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1}
 .levbig span{font-size:13px;letter-spacing:.06em}
 .levbig em{font-style:normal;font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
-#tip{position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;background:#0d141d;
+/* #tip2（纳指图的提示框）原本漏在选择器外，等于一个 position:static 的普通 div：
+   一有内容就把下面的整块（实际利率图）往下推 174px，悬浮时页面乱跳，
+   而且没有背景板、直接压在图上。两个提示框走同一条规则。 */
+#tip,#tip2{position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;background:#0d141d;
      border:1px solid var(--border-2);border-radius:3px;padding:8px 11px;font-family:var(--mono);
      font-size:11.5px;line-height:1.6;white-space:nowrap;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.55)}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -383,6 +386,11 @@ function axisDates(dates, n){
 
 /* ---- temperature chart ---- */
 const W = 1000, H = 300, M = {t:12, r:14, b:26, l:34};
+/* 纳指图 ↔ 实际利率图 的悬浮联动。两张图共用同一条时间轴、同样的左右边距，
+   所以同一个索引 i 在两张 SVG 里的 x 坐标完全相同，直接把 i 传过去就行。
+   由 drawRR 在每次重绘时挂上（区间一变两张图都会重画）；实际利率取不到时置空，
+   纳指图那边的调用就是个空操作。 */
+let rrLink = null;
 function drawTemp(){
   const svg = $("cTemp");
   svg.innerHTML = "";
@@ -573,6 +581,7 @@ function drawNdx(){
     if (sp[i] == null) return;
     cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", .55);
     hov.setAttribute("cx", x(i)); hov.setAttribute("cy", y(sp[i])); hov.setAttribute("opacity", 1);
+    if (rrLink) rrLink.show(i);          // 虚线延伸到下方的实际利率图并显示两条分位
     const rg = regOf(Sl[i]);
     const hit = [fh[i] && rh, fhb[i] && rhb, fl[i] && rlo, fls[i] && rls,
                  fc[i] && rc, fn[i] && rn].filter(Boolean);
@@ -596,6 +605,7 @@ function drawNdx(){
   });
   svg.addEventListener("pointerleave", () => {
     cross.setAttribute("opacity", 0); hov.setAttribute("opacity", 0); tip.style.opacity = 0;
+    if (rrLink) rrLink.clear();
   });
 }
 
@@ -605,7 +615,7 @@ function drawRR(){
   const box = $("rrbox"), svg = $("cRR");
   // ST 缺失 = 这份 data.json 是旧引擎产出的。宁可整块不画，也不要画一条
   // 没有底纹的利率线——那看起来像"从未进入过重估期"，是个会骗人的空图。
-  if (!RR || !M0 || !ST) { box.style.display = "none"; return; }
+  if (!RR || !M0 || !ST) { box.style.display = "none"; rrLink = null; return; }
   box.style.display = "";
   $("rrwin").textContent = M0.win;
   $("rrpctwin").textContent = (M0.pct_win / 252).toFixed(0);
@@ -617,12 +627,13 @@ function drawRR(){
     ? "；<b>是紧缩不是通缩</b>——同期名义10年期美债也在上行" : "";
   svg.innerHTML = "";
   const A = RSTART, Bx = REND + 1, v = RR.slice(A, Bx), D2 = D.series.dates.slice(A, Bx), N2 = v.length;
-  const h = 118, m = {t:12, r:14, b:22, l:52};
+  // t 比其余图大，是给顶部那行悬浮读数留的带子——否则利率线走到高位时会和读数叠在一起
+  const h = 132, m = {t:26, r:14, b:22, l:52};
   svg.setAttribute("viewBox", `0 0 ${W} ${h}`);
   svg.setAttribute("width", "100%"); svg.style.minWidth = "560px"; svg.style.height = "auto";
   const iw = W - m.l - m.r, ih = h - m.t - m.b;
   const ok = v.filter(z => z != null);
-  if (!ok.length) { box.style.display = "none"; return; }
+  if (!ok.length) { box.style.display = "none"; rrLink = null; return; }
   const lo = Math.min(...ok), hi = Math.max(...ok), pad = (hi - lo) * .12 || .2;
   const x = i => m.l + (N2 === 1 ? iw/2 : i / (N2 - 1) * iw);
   const y = z => m.t + (1 - (z - lo + pad) / (hi - lo + 2*pad)) * ih;
@@ -657,6 +668,47 @@ function drawRR(){
   svg.appendChild(el("polyline", {points: v.map((z,i) => z == null ? null :
       `${x(i).toFixed(2)},${y(z).toFixed(2)}`).filter(Boolean).join(" "),
     fill:"none", stroke:"#8FA6BD", "stroke-width": N2 > 1200 ? 1.1 : 1.6, "stroke-linejoin":"round"}));
+
+  // —— 与纳指图联动的悬浮读数 ——
+  // 虚线与纳指图那条同一个 x（两张图坐标系一致），右上角给出当天的两条判据读数。
+  // 不悬浮时显示最新一天，面板不会是空的。
+  const SPD = D.series.rr_pct, LVL = D.series.rr_lvl_pct;
+  const rcross = el("line", {x1:0, x2:0, y1:m.t, y2:m.t+ih, stroke:"#8DA2B8",
+    "stroke-width":1, "stroke-dasharray":"3 3", opacity:0});
+  const rdot = el("circle", {r:3.4, fill:"none", stroke:"#E3EAF2", "stroke-width":1.5, opacity:0});
+  const rtxt = el("text", {id:"rrread", x:m.l+iw, y:14, "text-anchor":"end", "font-size":10.5,
+    "font-family":"IBM Plex Mono, monospace", fill:"#8DA2B8"});
+  svg.appendChild(rcross); svg.appendChild(rdot); svg.appendChild(rtxt);
+
+  // 一行读数：日期 · 利率 · 速度分位 · 水位分位，达标的那一项标成橙色
+  const span = (txt, fill) => { const t = el("tspan", {fill}); t.textContent = txt; return t; };
+  const fmt = (gi, li) => {
+    const parts = [];
+    if (D2[li] != null) parts.push(span(D2[li], "#56687D"));
+    if (v[li] != null) parts.push(span(`实际利率 ${v[li].toFixed(2)}%`, "#C6D3E0"));
+    const push = (name, val, hot) => {
+      if (val == null) return;
+      parts.push(span(`${name} ${val.toFixed(0)}`, hot ? "#D19A3E" : "#8DA2B8"));
+    };
+    if (SPD) push("速度分位", SPD[gi], SPD[gi] != null && SPD[gi] > M0.pct_th);
+    if (LVL) push("水位分位", LVL[gi], LVL[gi] != null && LVL[gi] < M0.lvl_th);
+    if (ST[gi]) parts.push(span("● 重估期", "#D19A3E"));
+    rtxt.textContent = "";
+    parts.forEach((t, k) => { if (k) rtxt.appendChild(span("　", "#3A4A5C")); rtxt.appendChild(t); });
+  };
+  const lastI = v.length - 1;
+  const showAt = li => {
+    li = Math.max(0, Math.min(N2 - 1, li));
+    fmt(A + li, li);
+    if (v[li] == null) { rdot.setAttribute("opacity", 0); return; }
+    rcross.setAttribute("x1", x(li)); rcross.setAttribute("x2", x(li));
+    rdot.setAttribute("cx", x(li)); rdot.setAttribute("cy", y(v[li]));
+  };
+  showAt(lastI);                                   // 默认读数：最新一天
+  rrLink = {
+    show(li){ showAt(li); rcross.setAttribute("opacity", .55); rdot.setAttribute("opacity", 1); },
+    clear(){ rcross.setAttribute("opacity", 0); rdot.setAttribute("opacity", 0); showAt(lastI); },
+  };
 }
 
 /* 预警图例：说明 + 触发次数 + 最近一次 */
