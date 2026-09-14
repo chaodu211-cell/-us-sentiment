@@ -89,82 +89,107 @@ chk("扩张分位无前视：第252点才有值", _e.iloc[:251].isna().all() and
 print("\n" + ("全部通过" if ok else "存在失败项"))
 
 
-# ---- 新增：实际利率快速抬升期 & 熊市状态 ----
-def _rr_series(periods=1200, seed=3):
-    """构造一条够长的实际利率序列：预热期噪声横盘 → 快速上行 → 高位横盘。
+# ---- 新增：实际利率重估期 & 熊市状态 ----
+def _rr_series(seed=3):
+    """构造一条有"水位维度"的实际利率序列，形状照着 2015-2023 的真实走法：
 
-    必须够长：分位要预热 RR_WIN(126) + RR_PCT_MIN(252) ≈ 378 天才有第一个读数。
-    横盘段要带噪声——分位是相对量，常数序列的变动全为 0，分位恒等于 50，测不出东西。
+        常态高位(1.0) → 压到低位(-1.0)并长期趴着 → 从低位快速修复到 1.6 → 高位横盘
+
+    只有"从被压低的水位往上快速修复"那一段才该被判成重估期。横盘段要带噪声——
+    分位是相对量，常数序列的变动全为 0、分位恒等于 50，测不出东西。
+    返回 (序列, 各段的起止下标)。
     """
     import numpy as np, pandas as pd
     rng = np.random.RandomState(seed)
-    n_flat, n_up = 700, 250
-    n_hi = periods - n_flat - n_up
-    flat = -1.0 + rng.normal(0, 0.04, n_flat).cumsum() * 0.1     # 慢漂的横盘
-    up = flat[-1] + np.linspace(0, 2.2, n_up)                     # 6 个月变动远超下限
-    hi = up[-1] + rng.normal(0, 0.03, n_hi).cumsum() * 0.1        # 高位横盘：涨势停了
-    v = np.concatenate([flat, up, hi])
-    return pd.Series(v, index=pd.bdate_range("2016-01-01", periods=periods)), n_flat, n_up
+    n1, n2, n3, n4 = 600, 550, 250, 300
+    hi = 1.0 + rng.normal(0, 0.03, n1).cumsum() * 0.08          # 常态高位
+    drop = np.linspace(hi[-1], -1.0, 60)                         # 快速压低（利率在跌）
+    low = -1.0 + rng.normal(0, 0.03, n2 - 60).cumsum() * 0.06    # 低位长期趴着
+    up = low[-1] + np.linspace(0, 2.6, n3)                       # 从低位快速修复
+    top = up[-1] + rng.normal(0, 0.03, n4).cumsum() * 0.06       # 高位横盘：涨势停了
+    v = np.concatenate([hi, drop, low, up, top])
+    idx = pd.bdate_range("2016-01-01", periods=len(v))
+    seg = {"low": (n1 + n2 - 200, n1 + n2), "up": (n1 + n2, n1 + n2 + n3),
+           "top": (n1 + n2 + n3, len(v))}
+    return pd.Series(v, index=idx), seg
 
 
 def t_repricing():
     import pandas as pd, numpy as np, engine as E
-    rr, n_flat, n_up = _rr_series()
+    rr, seg = _rr_series()
     nom = rr + 2.0        # 名义与实际同向同幅 → 名义闸门恒通过
     on = E.repricing_regime(rr, nom)
+    spd, lvl = E.real_rate_speed_pct(rr), E.real_rate_level_pct(rr)
+    a, b = seg["up"]
 
     warm = E.RR_WIN + E.RR_PCT_MIN
-    chk("快速抬升期：分位预热完成前不判定（无前视）", on.iloc[:warm].sum() == 0)
-    chk("快速抬升期：上行段内确实触发", on.iloc[n_flat:n_flat + n_up].sum() > 0,
-        f"共 {int(on.iloc[n_flat:n_flat + n_up].sum())} 天")
-    # 关键的行为变化：旧口径靠"水位升过 0.5%"退出，新口径靠"涨势停了"退出。
-    # 高位横盘段利率一直在 1.2% 以上（旧口径早就退出了），这里要验证它照样会退出。
-    tail = on.iloc[n_flat + n_up + E.RR_WIN:]
-    chk("快速抬升期：涨势停下后退出（与水位高低无关）", not tail.any(),
-        f"高位横盘段仍为真 {int(tail.sum())} 天，期间利率 {rr.iloc[-1]:.2f}%")
+    chk("重估期：分位预热完成前不判定（无前视）", on.iloc[:warm].sum() == 0)
+    chk("重估期：从低位快速修复的那一段确实触发", on.iloc[a:b].sum() > 0,
+        f"共 {int(on.iloc[a:b].sum())} 天")
+
+    # 只看水位不行：低位横盘段水位分位很低，但利率没在涨，不该触发
+    la, lb = seg["low"]
+    chk("重估期：水位低但没在涨 → 不触发（只看水位会把 2020-03 判反）",
+        on.iloc[la:lb].sum() == 0,
+        f"低位段水位分位中位 {np.nanmedian(lvl.iloc[la:lb]):.0f}，触发 {int(on.iloc[la:lb].sum())} 天")
+
+    # 水位退出：高位横盘段利率停在最高处（旧口径靠绝对水位退出，这里靠水位分位）
+    ta, tb = seg["top"]
+    tail = on.iloc[ta + E.RR_WIN:]
+    chk("重估期：水位修复到位后退出", not tail.any(),
+        f"高位横盘段仍为真 {int(tail.sum())} 天，水位分位 {lvl.iloc[-1]:.0f}")
+
+    # 只看速度不行：同样的上涨幅度发生在"水位已经很高"时不该触发（2018Q4 那种）
+    hi_rise = pd.Series(np.concatenate([
+        1.0 + np.random.RandomState(1).normal(0, 0.03, 900).cumsum() * 0.05,
+        np.linspace(0, 0.8, 300)]), index=pd.bdate_range("2016-01-01", periods=1200))
+    hi_rise.iloc[900:] += hi_rise.iloc[899]
+    on_hi = E.repricing_regime(hi_rise, hi_rise + 2.0)
+    s_hi, l_hi = E.real_rate_speed_pct(hi_rise), E.real_rate_level_pct(hi_rise)
+    chk("重估期：同样的涨速发生在高水位时不触发（2018Q4 那种）", not on_hi.iloc[900:].any(),
+        f"涨速分位最高 {np.nanmax(s_hi.iloc[900:]):.0f}，水位分位最低 {np.nanmin(l_hi.iloc[900:]):.0f}，"
+        f"触发 {int(on_hi.iloc[900:].sum())} 天")
 
     # 滞回：进入后短暂回落不应立刻熄灭（2022-03 俄乌避险那种闪断）
-    v2 = rr.copy()
-    i0 = n_flat + 150
+    v2 = rr.copy(); i0 = a + 60
     v2.iloc[i0:i0 + 15] -= 0.45
     on2 = E.repricing_regime(v2, nom)
-    chk("快速抬升期：滞回让短暂回落不熄灭",
-        bool(on[rr.index[i0]]) and bool(on2.iloc[i0 + 8]))
+    chk("重估期：滞回让短暂回落不熄灭", bool(on.iloc[i0]) and bool(on2.iloc[i0 + 8]))
 
     # 名义同向闸门：实际利率照样快速上行，但名义在下行（2020-03 通缩恐慌那种）
     nom_dn = pd.Series(np.linspace(3.0, 1.0, len(rr)), index=rr.index)
-    on3 = E.repricing_regime(rr, nom_dn)
-    chk("快速抬升期：名义利率下行时不触发（通缩式上行不算重估）", not on3.any(),
-        f"共 {int(on3.sum())} 天")
+    chk("重估期：名义利率下行时不触发（通缩式上行不算重估）",
+        not E.repricing_regime(rr, nom_dn).any())
 
-    # 绝对下限：把整条曲线的变动幅度压到下限以下，分位再高也不该入场
-    tiny = (rr - rr.iloc[0]) * (E.RR_MIN_RISE / 2.2 * 0.5) + rr.iloc[0]
-    chk("快速抬升期：涨幅达不到绝对下限时不入场（死水利率环境的噪声）",
-        not E.repricing_regime(tiny, nom).any())
+    # 绝对下限：把涨幅整体压扁，分位再高也不该入场
+    flat = (rr - rr.iloc[0]) * 0.02 + rr.iloc[0]
+    chk("重估期：涨幅达不到绝对下限时不入场（死水利率环境的噪声）",
+        not E.repricing_regime(flat, flat + 2.0).any())
 
-    chk("快速抬升期：无数据时返回 None", E.repricing_regime(None) is None)
-    # 拿不到名义利率时整条闸门不启用（蓝点全记实心），而不是退化成只看分位——
-    # 只看分位会把 2020-03 那种通缩式上行判成重估
-    chk("快速抬升期：缺名义利率时整条闸门不启用", E.repricing_regime(rr) is None)
+    chk("重估期：无数据时返回 None", E.repricing_regime(None) is None)
+    # 拿不到名义利率时整条闸门不启用（蓝点全记实心），而不是退化成不做这项检查
+    chk("重估期：缺名义利率时整条闸门不启用", E.repricing_regime(rr) is None)
 
 
-def t_rr_speed_pct():
-    """分位本身：不能被 chg 开头的 NaN 压低，也不能有前视。"""
+def t_rr_pct_series():
+    """两条分位列本身：不能被 NaN 压低，不能有前视。"""
     import pandas as pd, numpy as np, engine as E
-    rr, _, _ = _rr_series()
-    pct = E.real_rate_speed_pct(rr)
+    rr, _ = _rr_series()
+    spd = E.real_rate_speed_pct(rr)
+    lvl = E.real_rate_level_pct(rr)
     warm = E.RR_WIN + E.RR_PCT_MIN
-    chk("6个月变动分位：预热期无读数", pct.iloc[:warm - 1].isna().all())
-    chk("6个月变动分位：预热后有读数", np.isfinite(pct.iloc[warm + 5]))
+    chk("涨速分位：预热期无读数", spd.iloc[:warm - 1].isna().all())
+    chk("水位分位：预热期无读数", lvl.iloc[:E.RR_LVL_MIN - 1].isna().all())
     # 单调上行段末端的 6 个月变动必是历史最大 → 分位应贴近 100；
     # 若 rolling 窗口把 NaN 计入分母，这里会明显低于 100（就是 dropna 要修的 bug）
-    chk("6个月变动分位：历史最快的一段读数接近 100", pct.max() > 99.0,
-        f"max={pct.max():.2f}")
+    chk("涨速分位：历史最快的一段读数接近 100", spd.max() > 99.0, f"max={spd.max():.2f}")
+    chk("水位分位：历史最高的一段读数接近 100", lvl.max() > 99.0, f"max={lvl.max():.2f}")
     # 无前视：截断序列后，公共区段的读数必须逐点一致
     cut = len(rr) - 60
-    chk("6个月变动分位：无前视（截断后公共区段不变)",
-        np.allclose(pct.iloc[:cut].dropna().values,
-                    E.real_rate_speed_pct(rr.iloc[:cut]).dropna().values, atol=1e-9))
+    for name, fn in [("涨速分位", E.real_rate_speed_pct), ("水位分位", E.real_rate_level_pct)]:
+        full, part = fn(rr).iloc[:cut].dropna(), fn(rr.iloc[:cut]).dropna()
+        chk(f"{name}：无前视（截断后公共区段不变）",
+            len(full) == len(part) and np.allclose(full.values, part.values, atol=1e-9))
 
 
 def t_bear():
@@ -283,7 +308,7 @@ def t_alert_wiring():
         (not al["hot"].iloc[:E.PERSIST - 1].any()) and bool(al["hot"].iloc[E.PERSIST - 1]))
 
 
-for f in (t_repricing, t_rr_speed_pct, t_bear, t_alert_exclusive, t_compose_sell,
+for f in (t_repricing, t_rr_pct_series, t_bear, t_alert_exclusive, t_compose_sell,
           t_narrow_neutral, t_alert_wiring):
     f()
 print("\n新增用例全部通过" if ok else "\n新增用例有失败")
