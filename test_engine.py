@@ -89,23 +89,82 @@ chk("扩张分位无前视：第252点才有值", _e.iloc[:251].isna().all() and
 print("\n" + ("全部通过" if ok else "存在失败项"))
 
 
-# ---- 新增：贴现率重估状态 & 熊市状态 ----
+# ---- 新增：实际利率快速抬升期 & 熊市状态 ----
+def _rr_series(periods=1200, seed=3):
+    """构造一条够长的实际利率序列：预热期噪声横盘 → 快速上行 → 高位横盘。
+
+    必须够长：分位要预热 RR_WIN(126) + RR_PCT_MIN(252) ≈ 378 天才有第一个读数。
+    横盘段要带噪声——分位是相对量，常数序列的变动全为 0，分位恒等于 50，测不出东西。
+    """
+    import numpy as np, pandas as pd
+    rng = np.random.RandomState(seed)
+    n_flat, n_up = 700, 250
+    n_hi = periods - n_flat - n_up
+    flat = -1.0 + rng.normal(0, 0.04, n_flat).cumsum() * 0.1     # 慢漂的横盘
+    up = flat[-1] + np.linspace(0, 2.2, n_up)                     # 6 个月变动远超下限
+    hi = up[-1] + rng.normal(0, 0.03, n_hi).cumsum() * 0.1        # 高位横盘：涨势停了
+    v = np.concatenate([flat, up, hi])
+    return pd.Series(v, index=pd.bdate_range("2016-01-01", periods=periods)), n_flat, n_up
+
+
 def t_repricing():
     import pandas as pd, numpy as np, engine as E
-    idx = pd.bdate_range("2020-01-01", periods=600)
-    # 前 200 天在 -1.0 附近，随后线性升到 +1.5，再回落
-    v = np.concatenate([np.full(200, -1.0), np.linspace(-1.0, 1.5, 250), np.linspace(1.5, -0.5, 150)])
-    rr = pd.Series(v, index=idx)
-    on = E.repricing_regime(rr)
-    chk("重估状态：横盘期不触发", on.iloc[:200].sum() == 0)
-    chk("重估状态：实际利率升过门槛后自动退出",
-        on.iloc[E.RR_WIN + 260:E.RR_WIN + 300].sum() == 0)
-    chk("重估状态：上行段内确实触发", on.sum() > 0, f"共 {int(on.sum())} 天")
-    # 滞回：一旦进入，短暂回落不应立刻熄灭
-    v2 = v.copy(); v2[300:315] = v2[300] - 0.30
-    on2 = E.repricing_regime(pd.Series(v2, index=idx))
-    chk("重估状态：滞回让短暂回落不熄灭", bool(on2.iloc[305]))
-    chk("重估状态：无数据时返回 None", E.repricing_regime(None) is None)
+    rr, n_flat, n_up = _rr_series()
+    nom = rr + 2.0        # 名义与实际同向同幅 → 名义闸门恒通过
+    on = E.repricing_regime(rr, nom)
+
+    warm = E.RR_WIN + E.RR_PCT_MIN
+    chk("快速抬升期：分位预热完成前不判定（无前视）", on.iloc[:warm].sum() == 0)
+    chk("快速抬升期：上行段内确实触发", on.iloc[n_flat:n_flat + n_up].sum() > 0,
+        f"共 {int(on.iloc[n_flat:n_flat + n_up].sum())} 天")
+    # 关键的行为变化：旧口径靠"水位升过 0.5%"退出，新口径靠"涨势停了"退出。
+    # 高位横盘段利率一直在 1.2% 以上（旧口径早就退出了），这里要验证它照样会退出。
+    tail = on.iloc[n_flat + n_up + E.RR_WIN:]
+    chk("快速抬升期：涨势停下后退出（与水位高低无关）", not tail.any(),
+        f"高位横盘段仍为真 {int(tail.sum())} 天，期间利率 {rr.iloc[-1]:.2f}%")
+
+    # 滞回：进入后短暂回落不应立刻熄灭（2022-03 俄乌避险那种闪断）
+    v2 = rr.copy()
+    i0 = n_flat + 150
+    v2.iloc[i0:i0 + 15] -= 0.45
+    on2 = E.repricing_regime(v2, nom)
+    chk("快速抬升期：滞回让短暂回落不熄灭",
+        bool(on[rr.index[i0]]) and bool(on2.iloc[i0 + 8]))
+
+    # 名义同向闸门：实际利率照样快速上行，但名义在下行（2020-03 通缩恐慌那种）
+    nom_dn = pd.Series(np.linspace(3.0, 1.0, len(rr)), index=rr.index)
+    on3 = E.repricing_regime(rr, nom_dn)
+    chk("快速抬升期：名义利率下行时不触发（通缩式上行不算重估）", not on3.any(),
+        f"共 {int(on3.sum())} 天")
+
+    # 绝对下限：把整条曲线的变动幅度压到下限以下，分位再高也不该入场
+    tiny = (rr - rr.iloc[0]) * (E.RR_MIN_RISE / 2.2 * 0.5) + rr.iloc[0]
+    chk("快速抬升期：涨幅达不到绝对下限时不入场（死水利率环境的噪声）",
+        not E.repricing_regime(tiny, nom).any())
+
+    chk("快速抬升期：无数据时返回 None", E.repricing_regime(None) is None)
+    # 拿不到名义利率时整条闸门不启用（蓝点全记实心），而不是退化成只看分位——
+    # 只看分位会把 2020-03 那种通缩式上行判成重估
+    chk("快速抬升期：缺名义利率时整条闸门不启用", E.repricing_regime(rr) is None)
+
+
+def t_rr_speed_pct():
+    """分位本身：不能被 chg 开头的 NaN 压低，也不能有前视。"""
+    import pandas as pd, numpy as np, engine as E
+    rr, _, _ = _rr_series()
+    pct = E.real_rate_speed_pct(rr)
+    warm = E.RR_WIN + E.RR_PCT_MIN
+    chk("6个月变动分位：预热期无读数", pct.iloc[:warm - 1].isna().all())
+    chk("6个月变动分位：预热后有读数", np.isfinite(pct.iloc[warm + 5]))
+    # 单调上行段末端的 6 个月变动必是历史最大 → 分位应贴近 100；
+    # 若 rolling 窗口把 NaN 计入分母，这里会明显低于 100（就是 dropna 要修的 bug）
+    chk("6个月变动分位：历史最快的一段读数接近 100", pct.max() > 99.0,
+        f"max={pct.max():.2f}")
+    # 无前视：截断序列后，公共区段的读数必须逐点一致
+    cut = len(rr) - 60
+    chk("6个月变动分位：无前视（截断后公共区段不变)",
+        np.allclose(pct.iloc[:cut].dropna().values,
+                    E.real_rate_speed_pct(rr.iloc[:cut]).dropna().values, atol=1e-9))
 
 
 def t_bear():
@@ -124,9 +183,9 @@ def t_alert_exclusive():
     idx = pd.bdate_range("2018-01-01", periods=800)
     t = pd.Series(np.random.RandomState(0).uniform(0, 100, 800), index=idx)
     px = pd.Series(np.linspace(300, 150, 800), index=idx)
-    rr = pd.Series(np.linspace(-1.2, 0.2, 800), index=idx)
+    rp = pd.Series(np.arange(800) % 3 == 0, index=idx)   # 状态序列由 repricing_regime 预先算好
     vix = pd.Series(35.0, index=idx)
-    al = E.build_alerts(t, pd.DataFrame(index=idx), vix=vix, temp_fast=t, ndx=px, real_rate=rr)
+    al = E.build_alerts(t, pd.DataFrame(index=idx), vix=vix, temp_fast=t, ndx=px, repricing=rp)
     chk("红点与熊市反弹互斥", not (al["hot"] & al["hot_bear"]).any())
     chk("实心蓝点与空心蓝点互斥", not (al["cold"] & al["cold_soft"]).any())
 
@@ -224,7 +283,8 @@ def t_alert_wiring():
         (not al["hot"].iloc[:E.PERSIST - 1].any()) and bool(al["hot"].iloc[E.PERSIST - 1]))
 
 
-for f in (t_repricing, t_bear, t_alert_exclusive, t_compose_sell, t_narrow_neutral, t_alert_wiring):
+for f in (t_repricing, t_rr_speed_pct, t_bear, t_alert_exclusive, t_compose_sell,
+          t_narrow_neutral, t_alert_wiring):
     f()
 print("\n新增用例全部通过" if ok else "\n新增用例有失败")
 

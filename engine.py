@@ -39,8 +39,8 @@ MA_WIN      = 20    # 均线窗口
 # 与 ERP 那半**方向相反**，不是中性稀释而是反向对冲，正好把信号抵消掉。
 # 两端都因此受损：ERP 最低10%的日子（=最便宜）纯口径后续 +7.91%/23%为负，
 # blend 只有 +4.70%/35%为负——蓝点想要的"估值到位"信息也被抹掉了。
-# 加息周期的失真交给 repricing_regime()（贴现率重估闸门）去处理，那个实测有效
-# （空心蓝 77% 为负 vs 实心蓝 0% 为负），不需要在因子层面再修一次、还修坏。
+# 加息周期的失真交给 repricing_regime()（实际利率快速抬升期闸门）去处理，那个实测有效
+# （空心蓝 93% 为负 vs 实心蓝 0% 为负），不需要在因子层面再修一次、还修坏。
 # 代价：2022-10 熊市底 ERP 反向分位会重新读到 90+ 的"极贵"。这是**描述**失真，
 # 已由熊市反弹预警与空心蓝点在**信号**层面兜住，不再牺牲因子本身的判别力去换它。
 ERP_MODE = "erp"
@@ -432,18 +432,38 @@ def build_indicators():
     return pd.DataFrame(raw).reindex(idx), meta, spy, lev_info
 
 
-def load_real_rate(idx):
-    """10 年期 TIPS 实际收益率（财政部日频，%）。取不到返回 None，宏观闸门自动不启用。"""
-    p = os.path.join(RAW, "_dfii10.csv")
+def _load_rate(fname):
+    """财政部日频收益率 CSV（date,value，新到旧）→ 完整历史序列（%）。取不到返回 None。"""
+    p = os.path.join(RAW, fname)
     if not os.path.exists(p):
         return None
-    df = pd.read_csv(p, header=None, names=["date", "rr"])
+    df = pd.read_csv(p, header=None, names=["date", "v"])
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["rr"] = pd.to_numeric(df["rr"], errors="coerce")
-    s = df.dropna().drop_duplicates("date").sort_values("date").set_index("date")["rr"]
-    if len(s) < RR_WIN + 20:
-        return None
-    return s.reindex(idx.union(s.index)).ffill().reindex(idx)
+    df["v"] = pd.to_numeric(df["v"], errors="coerce")
+    s = df.dropna().drop_duplicates("date").sort_values("date").set_index("date")["v"]
+    return s if len(s) >= RR_WIN + 20 else None
+
+
+def align_to(s, idx):
+    """把日频外部序列对齐到交易日索引（前向填充，不外推）。s 为 None 时返回 None。"""
+    return None if s is None else s.reindex(idx.union(s.index)).ffill().reindex(idx)
+
+
+def load_real_rate(idx=None):
+    """10 年期 TIPS 实际收益率（%）。取不到返回 None，宏观闸门自动不启用。
+
+    **idx=None 时返回完整历史序列**，这不是可有可无的便利参数：快速抬升期要算
+    「6 个月变动的 3 年滚动分位」，分位必须在完整 raw 序列上算完再截断到展示窗口。
+    若先截断再算，展示窗口开头约一年半（126 天凑变动 + 252 天凑分位）全是 NaN，
+    那段时间的蓝点会因为"没数据"而不是"判断为慢"被记成实心——2018-12 那次正好落在这里。
+    raw/_dfii10.csv 由 fetch_vix_dgs10.py 回补 11 年，够预热。
+    """
+    return align_to(_load_rate("_dfii10.csv"), idx) if idx is not None else _load_rate("_dfii10.csv")
+
+
+def load_nominal_rate(idx=None):
+    """10 年期名义美债收益率（%）。与 build_erp 用的是同一个 raw/_dgs10.csv。"""
+    return align_to(_load_rate("_dgs10.csv"), idx) if idx is not None else _load_rate("_dgs10.csv")
 
 
 def load_vix(idx):
@@ -564,20 +584,62 @@ NDX_DD_COLD = 0     # 蓝点附加条件：纳指自峰值回撤 ≥ 此百分�
                     # 试过 13：十年只挡掉一天（2026-03-27，快温度18.5、VIX31.1、回撤仅11.3%），
                     # 而那次后续3个月涨了28.9%，等于唯一一次生效是挡掉了好信号，故关闭。
                     # 峰值取截至当日的累计最高（cummax），不含前视；改回非零即可重新启用。
-# —— 贴现率重估状态（蓝点的宏观闸门）——
+# —— 实际利率快速抬升期（蓝点的宏观闸门）——
 # 蓝点是"恐慌到位"的信号，它只对**冲击式**下跌有效：跌得快、VIX 炸、几周内跌完。
 # 2022 年那种由实际利率抬升驱动的估值重估是另一回事——问题不在分子（情绪）而在分母
-# （贴现率），情绪指标再低也没用，因为跌的原因还没结束。判别式取两个条件同时成立：
-#   实际利率仍在低位（< RR_LEVEL）：重估还没走完，估值仍有压缩空间
-#   且 6 个月内明显上行（> RR_RISE）：重估正在进行时
-# 实测（2017-10 至今 9 次蓝点事件）：恰好挡住 2022 年 1/2/4 月这三次亏钱的蓝点，
-# 不误伤 2018-12、2020-03、2022-06、2022-09、2025-04、2026-03 这六次；
-# 且在 上行 0.0~0.25 × 水平 0.0~0.5 的整片参数区间上结论不变（不是卡在阈值边缘的拟合）。
-# 局限：样本里这种状态只出现过一次（2021H2–2022），等于零样本外验证；故不屏蔽蓝点，
-# 只把它降级为空心蓝点（分批 / 半仓），保留信息而不假装确定。
-RR_LEVEL = 0.5    # 实际利率绝对水平门槛（%）
-RR_RISE  = 0.25   # 6 个月上行幅度门槛（百分点）
-RR_WIN   = 126    # 6 个月 ≈ 126 个交易日
+# （贴现率），情绪指标再低也没用，因为跌的原因还没结束。
+#
+# —— 2026-09 改版：判别式从「水平 + 绝对涨幅」换成「涨幅的自身分位 + 名义同向」——
+# 旧式是 实际利率 < 0.5% 且 6 个月上行 > 0.25pp。它在样本里有效，但有两个毛病：
+#   1) 0.5% 是 ZIRP 年代的刻度。实际利率现在 2.6%，这条闸门**永远不可能再成立**，
+#      等于一个装饰品——未来任何一次 2.6% → 3.5% 的重估都不会被识别。
+#   2) 绝对涨幅门槛同样不跨期可比。6 个月变动这把尺子自己在漂：
+#         2018 最大 +0.44  |  2019 最大 +0.23  |  2022 中位 +1.03、最大 +2.20
+#         2024 最大 +0.48  |  2025 最大 +0.51  |  2026 至今最大 +0.71
+#      +0.4 在 2018 是史无前例，在 2022 是躺平。实测任何单一绝对门槛都做不成：
+#      门槛 0.30 会把 2025-04（后 126 日 +38.7%）和 2026-03（后 63 日 +28.9%）打成空心；
+#      门槛 0.45 又漏掉 2022 年 13 个坏蓝点里的 8 个——2022-03 俄乌避险把 6 个月变动
+#      短暂压回 0.3 以下，整段闪断。
+# 改为**相对速度**：6 个月变动落在它自己过去 3 年分布的 RR_PCT_TH 分位之上。
+# 尺子随利率环境自动伸缩，ZIRP 和 4.8% 两个世界通用。
+#
+# 注意这跟 VIX_COLD 用绝对阈值不是自相矛盾：VIX 30 是恐慌的**绝对**刻度（见上方注释，
+# 改成滚动分位实测更差）；而"利率涨得快不快"本来就只有相对于该利率环境才有意义。
+# 两者方向相反是因为被测量的东西性质不同，别拿其中一条去"统一"另一条。
+#
+# 名义同向闸门（RR_NEED_NOMINAL）不是可选项：实际利率上行有两种成因，只有一种算重估。
+#   2020-03 疫情底：实际利率 6 个月 +0.40（分位爆表），但名义 10Y 是 **−0.97**，
+#   盈亏平衡通胀塌了 1.37pp——涨的原因是通缩恐慌，不是紧缩。没有这条闸门，
+#   2020-03-18~20 三天会被打成空心，正好把史上最好的蓝点之一判反。
+#   2022-01 名义 +0.56、2022-06 名义 +1.57、2026-09 名义 +0.68，真紧缩全部同向，不误伤。
+# 故取不到 _dgs10.csv 时整条闸门不启用（蓝点全记实心），而不是退化成只看分位。
+#
+# RR_MIN_RISE 是分位法自带毛病的补丁：分位是相对的，分布平稳时**永远**有 15% 的日子
+# 在 85 分位之上——利率死水一潭的年代，6 个月挪 5bp 也能"排进前 15%"。
+# 故入场再加一个绝对下限，把这种噪声挡掉。只加在**入场**、不加在退出：
+# 加在退出会重新引入闪断（2022-03 俄乌避险把 6 个月变动压回 0.3 以下，
+# 那一段最糟的蓝点会只剩第一天被标出来，正是滞回本来要修的问题）。
+# 样本内它完全不吃劲——下限取 0.00 / 0.10 / 0.15 / 0.20 / 0.25 / 0.30 六档，
+# 空心实心分组与状态区间**一模一样**，只有入场日挪动几天。它防的是样本里没有的场景。
+#
+# 实测（2017-10 至今 42 个蓝点日 / 7 次事件，后 63 日 QQQ）：
+#   新口径  空心 14 天  −7.58% / 93%为负   |  实心 28 天  +28.23% / 0%为负
+#   旧口径  空心 13 天  −8.69% / 100%为负  |  实心 29 天  +27.49% / 0%为负
+# 判别力基本持平。差的那一天是 2022-06-16（后 63 日 +6.8%、后 126 日仅 +2.4%，
+# 是实心组里最弱的一个，且其后 10 月创了新低），半仓并不冤。
+# 参数是一整片平坦区，不是卡在边缘：分位窗口 2/3/4/5 年 × 门槛 75~95 的整片区域里
+# 分组结果完全一致；滞回退出阈值 30~70 对分组无任何影响。
+#
+# 局限没变，必须记住：样本里这种状态**仍然只出现过一次**（2021H2–2022），
+# 换口径并没有增加事件数。改它的理由不是"更准"，是旧口径已经失效。
+# 故仍然不屏蔽蓝点，只降级为空心蓝点（分批 / 半仓），保留信息而不假装确定。
+RR_WIN      = 126   # 变动窗口：6 个月 ≈ 126 个交易日
+RR_PCT_WIN  = 756   # 比较窗口：跟自己过去 3 年 ≈ 756 个交易日比
+RR_PCT_MIN  = 252   # 分位的最小样本数（不足则不判定，无前视）
+RR_PCT_TH   = 85    # 进入：6 个月变动的滚动分位 > 此值
+RR_PCT_EXIT = 50    # 退出：滚动分位跌回此值以下（滞回）
+RR_MIN_RISE = 0.20  # 入场的绝对下限（百分点）：6 个月变动再怎么"排名靠前"也得先真的涨过这么多
+RR_NEED_NOMINAL = True   # 要求名义 10Y 同期同向上行（见上）；关掉会把 2020-03 判反
 
 # —— 熊市反弹预警（补上 2022 年缺失的减仓信号）——
 # 熊市里滚动分位的参照系全是低值，反弹再猛温度也顶不到 80，于是整个 2022 年一个红点都没有。
@@ -656,8 +718,10 @@ ALERTS = [
              + f"，{_p(PERSIST_COLD)}"},
     {"key": "cold_soft", "name": "空心蓝点（宏观逆风）", "mark": "dot", "color": "#3D7FB8",
      "hollow": True, "persist": PERSIST_COLD,
-     "desc": f"蓝点条件成立，但同时处于贴现率重估状态：10 年期实际利率 < {RR_LEVEL:g}% 且 "
-             f"6 个月上行 > {RR_RISE:g} 个百分点。此时下跌由分母驱动，情绪见底不等于价格见底，建议分批而非满仓"},
+     "desc": f"蓝点条件成立，但同时处于实际利率快速抬升期：10 年期实际利率的 6 个月变动"
+             f"落在它自己过去 3 年分布的 {RR_PCT_TH} 分位以上，且同期名义 10Y 也在上行"
+             f"（带滞回，分位跌回 {RR_PCT_EXIT} 以下才退出）。"
+             f"此时下跌由分母驱动，情绪见底不等于价格见底，建议分批而非满仓"},
     {"key": "crowd", "name": "黑框预警", "mark": "box",  "color": "#0B0F16", "persist": PERSIST,
      "desc": f"TOP2行业成交额占比 > {CROWD_TOP2} 分位 且 上涨拥挤度 > {CROWD_NARROW}，{_p(PERSIST)}。"
              f"即「钱挤进少数几个行业，同时指数靠少数股票撑在高位、宽度已经崩坏」。"
@@ -666,29 +730,57 @@ ALERTS = [
 
 
 
-def repricing_regime(rr):
-    """贴现率重估状态（带滞回，rr 为 None 时返回 None）。
+def real_rate_speed_pct(rr):
+    """实际利率 6 个月变动，在它自己过去 RR_PCT_WIN 天分布中的分位（0-100）。
 
-    进入：实际利率仍在低位（< RR_LEVEL）且 6 个月上行 > RR_RISE —— 重估正在进行时。
-    退出：实际利率已回到 RR_LEVEL 以上（重估走完），或 6 个月**下行** > RR_RISE（转向宽松）。
-    用滞回而不是逐日判定，是因为纯逐日会闪断：2022 年 3 月俄乌避险把实际利率短暂压回
-    2021 年的水位，6 个月变化一度归零，若逐日判定，2/28–3/14 这段最糟的蓝点里
-    只有第一天会被标记出来。重估有没有走完看的是水位，不是某一天的斜率。
+    先 dropna 再排名：chg 开头有 RR_WIN 个 NaN，而 rolling_pct 的窗口按长度计数，
+    窗口里混着 NaN 会让分母虚高、分位被系统性压低（NaN 永远不计入"小于本值"）。
     """
-    if rr is None:
+    chg = (rr - rr.shift(RR_WIN)).dropna()
+    if chg.empty:
+        return pd.Series(np.nan, index=rr.index)
+    return rolling_pct(chg, window=RR_PCT_WIN, min_periods=RR_PCT_MIN).reindex(rr.index)
+
+
+def repricing_regime(rr, nominal=None):
+    """实际利率快速抬升期（带滞回；rr 为 None 时返回 None）。
+
+    进入：6 个月变动的 3 年滚动分位 > RR_PCT_TH、绝对涨幅 > RR_MIN_RISE，
+          且同期名义 10Y 也在上行。
+    退出：该分位跌回 RR_PCT_EXIT 以下（绝对下限只管入场，见常量区注释）。
+    判据只看**速度**、不看水位——水位门槛是 ZIRP 年代的刻度，不跨期可比（见常量区注释）。
+
+    用滞回而不是逐日判定，是因为纯逐日会闪断：2022 年 3 月俄乌避险把实际利率短暂压回
+    2021 年的水位，6 个月变动一度归零，若逐日判定，2/28–3/14 这段最糟的蓝点里
+    只有第一天会被标记出来。重估有没有走完是个状态，不是某一天的斜率。
+
+    **rr 必须是完整历史序列**，不能是已经截断到展示窗口的那条——分位要预热
+    RR_WIN + RR_PCT_MIN ≈ 一年半（见 load_real_rate 的说明）。
+
+    RR_NEED_NOMINAL 为真时 nominal 是**必需**的，拿不到就返回 None（整条闸门不启用，
+    蓝点全记实心）——而不是退化成只看分位。只看分位会把 2020-03 疫情底那种
+    "通胀预期崩塌推高实际利率"误判成紧缩式重估，把史上最好的蓝点之一打成空心；
+    那比"漏标 2022"错得更离谱。把 RR_NEED_NOMINAL 置假才是有意退回只看分位的口径。
+    """
+    if rr is None or (RR_NEED_NOMINAL and nominal is None):
         return None
-    chg = rr - rr.shift(RR_WIN)
+    pct = real_rate_speed_pct(rr)
+    rise = (rr - rr.shift(RR_WIN)).values
+    if RR_NEED_NOMINAL:
+        # NaN 比较得 False = 名义方向存疑时不入场，偏保守的那一侧
+        n = align_to(nominal, rr.index)
+        nom_up = ((n - n.shift(RR_WIN)) > 0).values
+    else:
+        nom_up = np.ones(len(rr), dtype=bool)
     on = np.zeros(len(rr), dtype=bool)
     state = False
-    for i, (v, c) in enumerate(zip(rr.values, chg.values)):
-        if not np.isfinite(v) or not np.isfinite(c):
-            on[i] = state
-            continue
-        if state:
-            if v >= RR_LEVEL or c < -RR_RISE:
-                state = False
-        elif v < RR_LEVEL and c > RR_RISE:
-            state = True
+    for i, (q, c, up) in enumerate(zip(pct.values, rise, nom_up)):
+        if np.isfinite(q):
+            if state:
+                if q < RR_PCT_EXIT:
+                    state = False
+            elif q > RR_PCT_TH and up and c > RR_MIN_RISE:
+                state = True
         on[i] = state
     return pd.Series(on, index=rr.index)
 
@@ -702,7 +794,7 @@ def bear_regime(px):
 
 
 def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
-                 narrow=None, real_rate=None, temp_sell=None):
+                 narrow=None, repricing=None, temp_sell=None):
     """→ {key: [bool, ...]}，与 temp 索引对齐。
 
     temp      主口径温度（三项平滑），用于页面展示与熊市反弹预警
@@ -710,7 +802,9 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
               行为与旧版一致（compose_sell 拿不到上涨拥挤度时就是这种情况）
     temp_fast 蓝点温度（当日口径）（同样六项等权，但三个平滑项取当日值），仅用于蓝点；
               缺省时蓝点退回用主口径，行为与旧版一致。
-    real_rate 10 年期实际利率；缺省时蓝点不做宏观分级（全部记为实心蓝点）。
+    repricing 实际利率快速抬升期的布尔序列（由 repricing_regime 在**完整历史**的利率
+              序列上算好再传进来，本函数不自己加载数据——分位要预热一年半，拿截断过的
+              序列算会把展示窗口开头判成"无数据"）。缺省时蓝点不做宏观分级（全记为实心）。
     """
     t = temp
     tc = t if temp_fast is None else temp_fast.reindex(t.index)
@@ -733,9 +827,9 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
     bear = bear.reindex(t.index).fillna(False)
     # 熊市反弹与标准红点互斥：温度同时越过 80 时只记标准红点，避免同一天两个记号叠在一起
     hot_bear = bear & (t > BEAR_TH) & ~hot
-    # 蓝点分级：处于贴现率重估状态的记为空心蓝点，两者互斥
-    rp = repricing_regime(real_rate.reindex(t.index)) if real_rate is not None else None
-    rp = pd.Series(False, index=t.index) if rp is None else rp.reindex(t.index).fillna(False)
+    # 蓝点分级：处于实际利率快速抬升期的记为空心蓝点，两者互斥
+    rp = (pd.Series(False, index=t.index) if repricing is None
+          else repricing.reindex(t.index).fillna(False).astype(bool))
     out = {"hot": hot, "hot_bear": hot_bear, "cold": cold & ~rp, "cold_soft": cold & rp}
     # 黑框 = TOP2 抱团分位 > CROWD_TOP2 且 上涨拥挤度 > CROWD_NARROW。
     # TOP2 那一项单独用 252 日滚动分位：扩张窗口"永不遗忘"，2020-21 的极值会把后来的
@@ -1072,14 +1166,19 @@ def main():
     vix = load_vix(have.index)
     crowd_pct = pd.DataFrame({c: rolling_pct(rawdf[c]).reindex(have.index)
                               for c in ["top2", "leverage"] if c in rawdf.columns})
-    rr = load_real_rate(have.index)
+    # 宏观闸门：在**完整历史**的利率序列上算状态，再对齐到展示窗口（见 load_real_rate）
+    rr_full, nom_full = load_real_rate(), load_nominal_rate()
+    rr = align_to(rr_full, have.index)
+    rp_full = repricing_regime(rr_full, nom_full)
+    rp = (None if rp_full is None
+          else align_to(rp_full.astype(float), have.index).fillna(0).astype(bool))
     al = build_alerts(temp_adj.reindex(have.index), adj.reindex(have.index), vix, temp_fast,
                       temp_sell=(temp_sell.reindex(have.index) if temp_sell is not None else None),
                       crowd_pct=crowd_pct if len(crowd_pct.columns) else None,
                       ndx=(ndx["close"].reindex(have.index) if ndx is not None else None),
                       narrow=(rawdf["_narrow_score"].reindex(have.index)
                               if "_narrow_score" in rawdf.columns else None),
-                      real_rate=rr)
+                      repricing=rp)
     # 杠杆资金多空比：原始值 + 252 日滚动分位。分位直接取 crowd_pct 里那一列，
     # 与黑框的判定同源——否则页面上会出现两个口径不同的"杠杆分位"互相打架。
     if "leverage" in rawdf.columns:
@@ -1091,13 +1190,24 @@ def main():
                                              for v in crowd_pct["leverage"].values]
     if rr is not None:
         out["series"]["real_rate"] = [None if not np.isfinite(v) else round(float(v), 2) for v in rr.values]
-        rp_now = repricing_regime(rr)
+        # 状态序列直接下发，页面不再自己重算一遍规则——同一条规则写两份迟早会走样，
+        # 何况 3 年滚动分位需要展示窗口之外的历史，前端根本算不出来。
+        if rp is not None:
+            out["series"]["repricing"] = [bool(x) for x in rp.values]
+        nom = align_to(nom_full, have.index)
+        spd = align_to(real_rate_speed_pct(rr_full), have.index) if rr_full is not None else None
+        def _v(s2, nd=2):
+            if s2 is None or not np.isfinite(s2.loc[last]):
+                return None
+            return round(float(s2.loc[last]), nd)
         out["macro"] = {
-            "real_rate": round(float(rr.loc[last]), 2) if np.isfinite(rr.loc[last]) else None,
-            "chg": (round(float(rr.loc[last] - rr.shift(RR_WIN).loc[last]), 2)
-                    if np.isfinite(rr.shift(RR_WIN).loc[last]) else None),
-            "repricing": bool(rp_now.loc[last]) if pd.notna(rp_now.loc[last]) else False,
-            "level_th": RR_LEVEL, "rise_th": RR_RISE, "win": RR_WIN,
+            "real_rate": _v(rr), "chg": _v(rr - rr.shift(RR_WIN)),
+            "nominal": _v(nom), "nominal_chg": _v(None if nom is None else nom - nom.shift(RR_WIN)),
+            "pct": _v(spd, 1),
+            "repricing": bool(rp.loc[last]) if rp is not None else False,
+            "pct_th": RR_PCT_TH, "pct_exit": RR_PCT_EXIT,
+            "pct_win": RR_PCT_WIN, "win": RR_WIN,
+            "need_nominal": bool(RR_NEED_NOMINAL and nom_full is not None),
         }
     bpx = ndx["close"].reindex(have.index).ffill() if ndx is not None else None
     br = bear_regime(bpx)
