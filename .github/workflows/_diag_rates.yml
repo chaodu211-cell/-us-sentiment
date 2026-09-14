@@ -1,0 +1,33 @@
+name: _diag_rates
+
+# 一次性诊断：把 raw/ 缓存里的两条利率原始序列压缩后打到日志里，
+# 用来在本地复核实际利率快速抬升期的标定。不提交任何东西、不发布页面。
+# 用完即删。
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 缓存是在 main 上写的；feature 分支可以读到默认分支的缓存
+      - name: 取回 raw/ 缓存
+        uses: actions/cache/restore@v4
+        with:
+          path: raw
+          key: raw-never-matches
+          restore-keys: |
+            raw-
+
+      - name: 导出利率序列
+        run: |
+          set -e
+          for f in _dfii10.csv _dgs10.csv; do
+            if [ ! -f "raw/$f" ]; then echo "::error::raw/$f 不存在"; exit 1; fi
+            echo "rows($f)=$(wc -l < raw/$f)  first=$(head -1 raw/$f)  last=$(tail -1 raw/$f)"
+          done
+          echo "=====BEGIN_B64====="
+          tar czf - -C raw _dfii10.csv _dgs10.csv | base64 -w 100
+          echo "=====END_B64====="
