@@ -798,7 +798,7 @@ ALERTS = [
     {"key": "crowd", "name": "黑框预警", "mark": "box",  "color": "#0B0F16", "persist": PERSIST,
      "desc": f"前 {CROWD_TOP_FRAC:.0%} 成交额个股占比 > {CROWD_TOP2} 分位 且 "
              f"上涨拥挤度 > {CROWD_NARROW}，{_p(PERSIST)}。"
-             f"即「钱挤进少数几个行业，同时指数靠少数股票撑在高位、宽度已经崩坏」。"
+             f"即「成交额挤进最头部那十来只股票，同时指数靠少数股票撑在高位、宽度已经崩坏」。"
              f"下跌市中上涨拥挤度无定义，故本预警只在上涨市出现"},
 ]
 
