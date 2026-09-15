@@ -311,6 +311,27 @@ def build_indicators():
         raw["_turnover_daily"] = turnover
         raw["turnover"] = turnover.rolling(TO_SMOOTH, min_periods=1).mean()
 
+    # --- 2a. 前 2% 成交额个股占比（只喂黑框的抱团闸门，不进任何温度）---
+    # 以 `_` 开头存进 rawdf —— compose() 会跳过下划线列，所以六项蓝点温度与红点温度
+    # 逐日不受影响。这是有意为之：实测全局替换 top2 会换掉红点温度 22% 的权重
+    # （两条温度相关 0.939、45% 的日子偏移 >3 分），代价是丢掉 2018-08-29/30
+    # 与 2021-11-22~24 两段红点（后 63 日 -9.50% 与 -17.40%，后者是全样本最好的一段）。
+    # 黑框的判据只读 crowd_pct，与 compose/compose_sell 无交集，故能单独换而不动其余三类信号。
+    if stocks:
+        vals = np.where(np.isfinite(dv.values) & (dv.values > 0), dv.values, 0.0)
+        cnt = (vals > 0).sum(axis=1)
+        tot = vals.sum(axis=1)
+        # k 按**当日有效样本数**取 ceil(frac*n)，不写死只数：早年成分股覆盖不满 500，
+        # 固定 k 会让口径随覆盖度漂移。
+        k = np.maximum(1, np.ceil(CROWD_TOP_FRAC * cnt)).astype(int)
+        cum = np.cumsum(-np.sort(-vals, axis=1), axis=1)
+        top = cum[np.arange(len(vals)), np.clip(k, 1, vals.shape[1]) - 1]
+        raw["_topshare"] = pd.Series(
+            np.where((cnt >= 20) & (tot > 0), top / np.where(tot > 0, tot, np.nan) * 100.0, np.nan),
+            index=idx)
+        meta["_topshare"] = (f"当日成交额最大的前 {CROWD_TOP_FRAC:.0%} 只成分股，"
+                             f"占全篮子成交额的比例")
+
     # --- 2. TOP2 行业成交额占比 ---
     # 样本足够时用成分股实际成交额按行业汇总（"行业成交额"的本义）；否则退回行业ETF成交额
     if stocks and len(stocks) >= 60:
@@ -687,7 +708,47 @@ NT_TH = 85      # 【当前未被任何规则使用】原橙线预警的阈值�
 # **要打的折扣**：只有 11 段，且集中在 2020、2024、2026 三年，2017/2018/2019/2021/
 # 2022/2023 六年零触发——2021 泡沫顶和 2022 熊市它都没响。最近一段 2026-05-07~06-03
 # 后 63 日 +4.16%，是错报。参数仍是在同一段历史上调出来的，平坦区只降低过拟合风险，消不掉。
-CROWD_TOP2   = 80  # 黑框：TOP2 行业成交额占比的 252 日滚动分位门槛
+# —— 2026-09：抱团那一项从「TOP2 行业成交额占比」换成「前 2% 成交额个股占比」——
+# 换的是**黑框这一格**，不是 top2 本身：top2 仍留在 ORDER（蓝点温度）与 SELL_W（红点温度）里，
+# 逐日一个数都没动。理由见 build_indicators 里 `_topshare` 上方的注释——全局替换要拿
+# 2018-08 与 2021-11 两段红点去换，而分开改根本不用做这笔交易。
+#
+# 标定（QQQ 63 交易日远期，连 3 日确认；基准 +5.19% / 27%为负 / 回撤 -5.92%）：
+#   现行 top2   >80/>75   56天 11段  -0.84% / 59%为负 / 回撤 -12.58%
+#                         ~2021 19天 -1.73%/68%   2022~ 37天 -0.39%/54%
+#   前2%个股    >75/>75   43天 16段  -2.01% / 67%为负 / 回撤 -15.68%
+#                         ~2021 30天 -1.93%/63%   2022~ 13天 -2.19%/77%
+# 两段同号且幅度接近（-1.93 / -2.19），不是靠某一段撑出来的。
+#
+# 门槛为什么从 80 降到 75：换了因子就得重标，这仓库栽过（见 compose_sell 的
+# 「换腿而不重标门槛，等于把红点悄悄调严」）。前 2% 那把尺子上沿用 >80 是
+# 30天 10段 -1.97%——质量一样，但触发频率被腰斩（56天→30天），等于偷偷改严了。
+# 取 75 让天数回到 43、段数 16，与现行同量级。这一档在平坦区中部，不是尖峰：
+#   抱团门槛 >70 / >75 / >80 分别是 -1.86% / -2.01% / -1.97%，到 >85 才掉到 -1.24%。
+# 整张 5x4 矩阵（抱团 70~90 × 上涨拥挤度 65~80）**每一格都优于现行**：
+# 现行落在 -0.21% ~ -1.63%，前2% 落在 -0.92% ~ -3.77%。
+#
+# x 为什么取 2%：在 >75/>75 这一格上单调——前1% -2.20%(41天)、前2% -2.01%(43天)、
+# 前3% -1.74%(49天)、前5% -1.63%(60天)、现行 top2 -1.24%(61天)。信号集中在最头部
+# 十来只，摊薄到 5% 就掉一大截。取 2% 而不是 1%：两者质量相当（-2.20 vs -2.01），
+# 2% 的段数更多（16 vs 14），1% 只有约 10 只股票、单只停牌或拆股的扰动占比过大。
+#
+# **一个反直觉但必须记下来的点**：单因子秩相关是 top2 更强（-0.144 vs 前2% 的 -0.140，
+# 前5% 更是只有 -0.114），可**阈值化成闸门之后前2%反而全面更好**。这跟杠杆那一条
+# （见 CROWD_LEV 下方「连续地用 vs 阈值化」）是同一类现象：秩相关衡量的是全区间的
+# 单调性，闸门只用得上最高那一段的分辨力，两者不是一回事。别拿秩相关去挑闸门因子。
+#
+# 修掉的病：黑框原先 11 段全挤在 2020/2024/2025/2026 四年，2017/2018/2019/2021/2022/2023
+# 六年零触发。换之后 16 段，分年天数（2017→2026）：
+#   改前  0  0  0 19  0  0  0 13  5 19
+#   改后  0  7  1 22  0  0  0  9  2  2
+# 即：2018 补上 7 天、2019 补上 1 天（原先这两年完全失明），同时把上面点名的
+# 2026-05-07~06-03 那段错报从 19 天压到 2 天。新抓到的 2019-12-16 后 63 日 -15.43%，
+# 是全样本最好的信号之一，原黑框一天都没报；2024-12 那次也从 1 天变成 2 天（-10.11%）。
+# 局限没变：2021 泡沫顶与 2022 熊市**仍然一次都不触发**，这条信号依旧只在上涨市成立。
+# 危险窗口（未来 63 日跌幅≥8%）覆盖率前后都是 13/49，没有因为天数变少而漏掉整段。
+CROWD_TOP_FRAC = 0.02  # 黑框抱团闸门：按当日成交额取前 x 比例的个股（k = ceil(x × 当日有效样本数)）
+CROWD_TOP2   = 75  # 黑框：前 CROWD_TOP_FRAC 成交额个股占比的 252 日滚动分位门槛
 CROWD_NARROW = 75  # 黑框：上涨拥挤度门槛（不是分位，是评分本身）
 CROWD_LEV    = 80  # 【当前未被任何规则使用】曾用于黑框的杠杆分位门槛，保留供回退。
 # 为什么杠杆不进黑框：杠杆**有**独立预测力——控制过去 63 日动量后，它对未来 63 日收益的
@@ -735,7 +796,8 @@ ALERTS = [
              f"且同期名义 10Y 也在上行（是紧缩不是通缩）。带滞回。"
              f"此时下跌由分母驱动，情绪见底不等于价格见底，建议分批而非满仓"},
     {"key": "crowd", "name": "黑框预警", "mark": "box",  "color": "#0B0F16", "persist": PERSIST,
-     "desc": f"TOP2行业成交额占比 > {CROWD_TOP2} 分位 且 上涨拥挤度 > {CROWD_NARROW}，{_p(PERSIST)}。"
+     "desc": f"前 {CROWD_TOP_FRAC:.0%} 成交额个股占比 > {CROWD_TOP2} 分位 且 "
+             f"上涨拥挤度 > {CROWD_NARROW}，{_p(PERSIST)}。"
              f"即「钱挤进少数几个行业，同时指数靠少数股票撑在高位、宽度已经崩坏」。"
              f"下跌市中上涨拥挤度无定义，故本预警只在上涨市出现"},
 ]
@@ -857,13 +919,17 @@ def build_alerts(temp, pct, vix=None, temp_fast=None, crowd_pct=None, ndx=None,
     rp = (pd.Series(False, index=t.index) if repricing is None
           else repricing.reindex(t.index).fillna(False).astype(bool))
     out = {"hot": hot, "hot_bear": hot_bear, "cold": cold & ~rp, "cold_soft": cold & rp}
-    # 黑框 = TOP2 抱团分位 > CROWD_TOP2 且 上涨拥挤度 > CROWD_NARROW。
-    # TOP2 那一项单独用 252 日滚动分位：扩张窗口"永不遗忘"，2020-21 的极值会把后来的
+    # 黑框 = 抱团分位 > CROWD_TOP2 且 上涨拥挤度 > CROWD_NARROW。
+    # 抱团那一项单独用 252 日滚动分位：扩张窗口"永不遗忘"，2020-21 的极值会把后来的
     # 抱团永久挡在高分位之外——实测扩张口径下 2022 年之后再没触发过，等于失明。
+    # 优先用 topshare（前 2% 个股成交额占比，2026-09 换入，标定见 CROWD_TOP2 上方）；
+    # 取不到才退回 top2（行业口径），保证缺 _topshare 时行为与旧版一致而不是整条哑掉。
     top2 = None
-    if crowd_pct is not None and "top2" in crowd_pct.columns:
-        top2 = crowd_pct["top2"]
-    elif "top2" in pct.columns:
+    for _k in ("topshare", "top2"):
+        if crowd_pct is not None and _k in crowd_pct.columns:
+            top2 = crowd_pct[_k]
+            break
+    if top2 is None and "top2" in pct.columns:
         top2 = pct["top2"]
     if narrow is None or top2 is None:
         out["crowd"] = pd.Series(False, index=t.index)
@@ -1192,6 +1258,10 @@ def main():
     vix = load_vix(have.index)
     crowd_pct = pd.DataFrame({c: rolling_pct(rawdf[c]).reindex(have.index)
                               for c in ["top2", "leverage"] if c in rawdf.columns})
+    # 黑框的抱团闸门走这一列（build_alerts 优先读 topshare）；top2 那一列仍留着，
+    # 它是六项蓝点温度与红点温度的分项，两者口径不同，别互相顶替。
+    if "_topshare" in rawdf.columns:
+        crowd_pct["topshare"] = rolling_pct(rawdf["_topshare"]).reindex(have.index)
     # 宏观闸门：在**完整历史**的利率序列上算状态，再对齐到展示窗口（见 load_real_rate）
     rr_full, nom_full = load_real_rate(), load_nominal_rate()
     rr = align_to(rr_full, have.index)

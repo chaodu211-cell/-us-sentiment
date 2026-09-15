@@ -254,6 +254,41 @@ def t_narrow_neutral():
     chk("上涨拥挤度中性版：下跌市填 50", np.allclose(out.iloc[5:], 50.0))
 
 
+def t_topshare():
+    """前 CROWD_TOP_FRAC 成交额个股占比：k 的取法、占比算法，以及它不能进任何温度。"""
+    import pandas as pd, numpy as np, engine as E
+
+    def share(vols, frac):
+        """独立实现（排序取前 k 求和），与 engine 的向量化版本对照"""
+        v = np.array(sorted([x for x in vols if x > 0], reverse=True), dtype=float)
+        k = max(1, int(np.ceil(frac * len(v))))
+        return v[:k].sum() / v.sum() * 100.0
+
+    # k = ceil(frac * 当日有效样本数)：100 只、2% -> 前 2 只
+    vols = list(range(1, 101))
+    chk("k = ceil(frac × 有效样本数)", abs(share(vols, 0.02) - (100 + 99) / sum(vols) * 100) < 1e-9)
+    # 不足一只时向上取整到 1
+    chk("样本少时 k 至少为 1", abs(share([5.0, 3.0, 2.0], 0.02) - 50.0) < 1e-9)
+    # 只数固定时，越集中占比越高（单调性）
+    flat = share([10.0] * 50, 0.02)
+    conc = share([500.0] + [10.0] * 49, 0.02)
+    chk("越集中读数越高", conc > flat, f"{flat:.1f} -> {conc:.1f}")
+
+    # 下划线列不得进入六项蓝点温度 —— 这是"只改黑框"的全部安全性所在
+    idx = pd.date_range("2024-01-01", periods=400, freq="B")
+    rng = np.random.default_rng(3)
+    raw = pd.DataFrame({k: rng.normal(size=400).cumsum() for k in E.ORDER}, index=idx)
+    raw["_topshare"] = rng.normal(size=400).cumsum()
+    pct, adj, temp, temp_adj = E.compose(raw)
+    chk("_topshare 不进分位表（compose 跳过下划线列）", "_topshare" not in pct.columns)
+    base = E.compose(raw.drop(columns=["_topshare"]))[3]
+    chk("_topshare 存在与否不改变蓝点温度", np.allclose(temp_adj.values, base.values, equal_nan=True))
+    # 红点温度同理：SELL_W 里没有它
+    chk("红点温度权重表不含 topshare", "topshare" not in E.SELL_W and "_topshare" not in E.SELL_W)
+    chk("黑框抱团门槛与上涨拥挤度门槛是两把尺子（分位 vs 评分）",
+        E.CROWD_TOP_FRAC > 0 and 0 < E.CROWD_TOP2 <= 100)
+
+
 def t_alert_wiring():
     """红点走减仓温度、蓝点走 COLD_TH、黑框走 CROWD_TOP2/CROWD_NARROW —— 阈值确实被接上了。"""
     import pandas as pd, numpy as np, engine as E
@@ -298,6 +333,21 @@ def t_alert_wiring():
                            narrow=nr, ndx=px)["crowd"].any())
     chk("黑框：拿不到上涨拥挤度时不触发",
         not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp, ndx=px)["crowd"].any())
+    # 抱团闸门优先读 topshare（前 2% 个股成交额占比），取不到才退回 top2。
+    # 两列给相反的值，看哪一列说了算。
+    both_hi = pd.DataFrame({"top2":      pd.Series(E.CROWD_TOP2 - 1, index=idx),
+                            "topshare":  pd.Series(E.CROWD_TOP2 + 1, index=idx)})
+    both_lo = pd.DataFrame({"top2":      pd.Series(E.CROWD_TOP2 + 1, index=idx),
+                            "topshare":  pd.Series(E.CROWD_TOP2 - 1, index=idx)})
+    chk("黑框抱团闸门优先用 topshare（topshare 够则触发，哪怕 top2 不够）",
+        bool(E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=both_hi,
+                            narrow=nr, ndx=px)["crowd"].iloc[E.PERSIST:].all()))
+    chk("黑框抱团闸门优先用 topshare（topshare 不够则不触发，哪怕 top2 够）",
+        not E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=both_lo,
+                           narrow=nr, ndx=px)["crowd"].any())
+    chk("缺 topshare 时退回 top2（与旧版行为一致）",
+        bool(E.build_alerts(calm, pd.DataFrame(index=idx), crowd_pct=cp,
+                            narrow=nr, ndx=px)["crowd"].iloc[E.PERSIST:].all()))
     # 橙线已取消：规则表里不应再有它，build_alerts 也不应再产出该键
     chk("橙线预警已取消（ALERTS 中无 narrow）",
         not any(r["key"] == "narrow" for r in E.ALERTS))
@@ -309,7 +359,7 @@ def t_alert_wiring():
 
 
 for f in (t_repricing, t_rr_pct_series, t_bear, t_alert_exclusive, t_compose_sell,
-          t_narrow_neutral, t_alert_wiring):
+          t_narrow_neutral, t_topshare, t_alert_wiring):
     f()
 print("\n新增用例全部通过" if ok else "\n新增用例有失败")
 
