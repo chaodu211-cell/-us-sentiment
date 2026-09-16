@@ -33,8 +33,21 @@ main() 以后改了接线，这里不会自动跟着改。第一次跑出结果�
 3. 事件数才是有效样本量，不是天数。63 日前瞻窗口重叠的触发段算一个事件：
    样本内红点 66 天/23 段其实只有 8 个独立事件。日级均值的标准误按天算会严重低估。
 """
-import sys, numpy as np, pandas as pd
+import argparse, os, sys, numpy as np, pandas as pd
 import engine as E
+
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--raw", default=None,
+                 help="改用另一个原始数据目录（样本前检验用 raw_long，"
+                      "由 fetch_long_history.py 抓出来）。默认用 engine 的 raw/。")
+_ARGS, _ = _ap.parse_known_args()
+if _ARGS.raw:
+    # engine 的各 loader 都读模块级的 RAW，改它即可整体改向；不改 engine 源文件，
+    # 免得日常流水线跟着受影响。
+    E.RAW = os.path.abspath(_ARGS.raw)
+    if not os.path.isdir(E.RAW):
+        sys.exit(f"目录不存在：{E.RAW}")
+    print(f"原始数据目录：{E.RAW}")
 
 H = 63          # 前瞻窗口，与所有标定注释一致
 SPLIT = "2017-10-01"   # 标定窗口起点：此前 = 样本前，此后 = 样本内

@@ -4,7 +4,7 @@
 增量刷新 VIX（CBOE CDN）与10年期美债收益率（美国财政部官网），
 均为免 key 公开源，纯标准库。写入 raw/_vix.csv、raw/_dgs10.csv（date,value，新到旧，去重）。
 """
-import csv, os, ssl, sys, urllib.request
+import argparse, csv, os, ssl, sys, urllib.request
 from datetime import datetime
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -58,6 +58,8 @@ def refresh_vix():
 
 
 BACKFILL_YEARS = 11   # 覆盖 10 年量价历史 + ERP 的 252 日分位预热
+                      # 可用 --years 覆盖：样本前检验（oos_check.py）要回补到 2005，
+                      # 否则实际利率序列只到 2015，空心蓝点闸门在 2006-2017 全程不启用。
 
 # 财政部两张表：名义收益率曲线、实际（TIPS）收益率曲线。列名不同，其余格式一致。
 CURVES = {
@@ -122,6 +124,11 @@ def refresh_curve(kind):
 
 
 def main():
+    global BACKFILL_YEARS
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--years", type=int, default=BACKFILL_YEARS,
+                    help="回补多少年的利率曲线（默认 11；样本前检验用 22）")
+    BACKFILL_YEARS = ap.parse_args().years
     a_vix = refresh_vix()
     print(f"VIX    新增 {a_vix[0]} 行，共 {a_vix[1]} 行，最新 {a_vix[2]}")
     for kind in ("nominal", "real"):
