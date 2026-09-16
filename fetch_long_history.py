@@ -9,7 +9,7 @@
   · fetch_sp500_yahoo.py 裸 urllib 打 Yahoo，56 个标的全数 HTTP 429。
     而且它的名单走 Wikipedia，解析失败会**静默回退到内置 43 只篮子**，
     还不含 QQQ 与除 TQQQ 外的 14 只杠杆 ETF——即使跑通也算不出前瞻收益和杠杆温度。
-所以这里改用 yfinance（它自己处理 Yahoo 的 crumb/cookie 与退避），
+改用 yfinance 后仍被限流：2026-09-16 实测，40 只一批、并发 4，**第一批就整批 429**\n（YFRateLimitError），531 只全灭。不是配额耗尽，是之前那轮裸 urllib 的 56 个 429\n已经把这个 IP 标记了。所以这里逐只顺序抓、默认间隔 1.5s、撞限流按 30/60/120/300s\n退避，并且**连续失败 8 只就停**——被限流时磨完 531 只毫无意义。冷却后 --resume 续。\n名单方面用 yfinance（它自己处理 Yahoo 的 crumb/cookie），
 名单直接取 engine.SECTORS 的 503 只，**不走 Wikipedia**——宁可整个失败，
 也不要再出现"悄悄用 43 只票算宽度"那种能跑完但结论全错的情况。
 
@@ -69,9 +69,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2004-01-01")
     ap.add_argument("--end", default=None)
-    ap.add_argument("--batch", type=int, default=40, help="每批下载多少只")
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--sleep", type=float, default=1.5,
+                    help="每只之间的间隔秒数（默认 1.5）。Yahoo 对突发请求很敏感，"
+                         "2026-09 实测 40 只并发 4 会被整批 429。")
     ap.add_argument("--resume", action="store_true", help="跳过 raw_long/ 里已有且非空的")
+    ap.add_argument("--max-consec-fail", type=int, default=8,
+                    help="连续失败这么多只就放弃并退出（默认 8）。"
+                         "被限流时继续磨完 531 只毫无意义，只是白等。")
     ap.add_argument("--min-ok", type=float, default=0.90,
                     help="成功率低于此值就以非零码退出（默认 0.90）——"
                          "宁可失败也别让 oos_check 拿着残缺面板算出'能看的'假结论")
@@ -79,59 +83,104 @@ def main():
 
     try:
         import yfinance as yf
+        from yfinance.exceptions import YFRateLimitError
     except ImportError:
-        sys.exit("缺 yfinance：pip install yfinance")
+        sys.exit("缺 yfinance：pip3 install -U yfinance")
 
     os.makedirs(OUT, exist_ok=True)
     syms = targets()
     if a.resume:
-        todo = [s for s in syms
-                if not os.path.exists(os.path.join(OUT, f"{s}.csv"))
-                or os.path.getsize(os.path.join(OUT, f"{s}.csv")) < 100]
+        todo = [s_ for s_ in syms if not _done(s_)]
     else:
         todo = list(syms)
     print(f"目标 {len(syms)} 只（成分股 + 行业ETF + 杠杆ETF + SPY/QQQ），本次待抓 {len(todo)} 只")
-    print(f"区间 {a.start} ~ {a.end or '今天'}，每批 {a.batch}，并发 {a.workers}")
+    print(f"区间 {a.start} ~ {a.end or '今天'}，逐只顺序抓，间隔 {a.sleep}s")
+    if not todo:
+        print("都抓好了。"); _summary(syms, a.min_ok); return
 
-    ok, fail, t0 = [], [], time.time()
-    for i in range(0, len(todo), a.batch):
-        batch = todo[i:i + a.batch]
+    ok, fail, t0, consec = [], [], time.time(), 0
+    # 撞限流时的退避梯度；走完还被限就退出，等冷却后 --resume 续
+    BACKOFF = [30, 60, 120, 300]
+    bo = 0
+    for n, sym in enumerate(todo, 1):
         try:
-            df = yf.download(batch, start=a.start, end=a.end, auto_adjust=False,
-                             actions=False, group_by="ticker", threads=a.workers,
-                             progress=False)
-        except Exception as e:
-            fail += [(s, str(e)[:50]) for s in batch]
-            print(f"  批次 {i//a.batch+1} 整批失败：{str(e)[:70]}")
-            continue
-        for s in batch:
-            try:
-                sub = df[s] if isinstance(df.columns, pd.MultiIndex) else df
-                rows = to_rows(sub)
-            except Exception as e:
-                rows = []
+            df = yf.Ticker(sym).history(start=a.start, end=a.end,
+                                        auto_adjust=False, actions=False)
+            rows = to_rows(df)
             if len(rows) > 30:
-                write(s, rows); ok.append(s)
+                write(sym, rows); ok.append(sym); consec = 0; bo = 0
             else:
-                fail.append((s, f"only {len(rows)} rows"))
-        print(f"  {min(i+a.batch,len(todo))}/{len(todo)}  成功 {len(ok)}  失败 {len(fail)}  "
-              f"用时 {time.time()-t0:.0f}s")
+                fail.append((sym, f"only {len(rows)} rows")); consec += 1
+        except YFRateLimitError:
+            consec += 1
+            if bo < len(BACKOFF):
+                w = BACKOFF[bo]; bo += 1
+                print(f"  [{n}/{len(todo)}] {sym} 被限流，退避 {w}s 后重试…")
+                time.sleep(w)
+                try:
+                    df = yf.Ticker(sym).history(start=a.start, end=a.end,
+                                                auto_adjust=False, actions=False)
+                    rows = to_rows(df)
+                    if len(rows) > 30:
+                        write(sym, rows); ok.append(sym); consec = 0
+                        continue
+                except Exception:
+                    pass
+            fail.append((sym, "rate limited"))
+        except Exception as e:
+            fail.append((sym, str(e)[:50])); consec += 1
 
-    print(f"\n完成：{len(ok)} 成功 / {len(fail)} 失败，用时 {time.time()-t0:.0f}s")
+        if consec >= a.max_consec_fail:
+            print(f"\n连续 {consec} 只失败，停。已成功 {len(ok)} 只。")
+            print("Yahoo 多半已经把这个 IP 标记了——等 30-60 分钟，或换个网络"
+                  "（手机热点会换 IP），再用 --resume 续抓。")
+            break
+        if n % 25 == 0 or n == len(todo):
+            print(f"  {n}/{len(todo)}  成功 {len(ok)}  失败 {len(fail)}  "
+                  f"用时 {time.time()-t0:.0f}s")
+        time.sleep(a.sleep)
+
+    print(f"\n本轮：{len(ok)} 成功 / {len(fail)} 失败，用时 {time.time()-t0:.0f}s")
     if fail:
         print(f"  失败样例：{fail[:6]}")
-    have = [s for s in syms if os.path.exists(os.path.join(OUT, f"{s}.csv"))]
-    rate = len(have) / len(syms)
-    print(f"  raw_long/ 现有 {len(have)}/{len(syms)} 只（{rate:.0%}）")
-    # 单独点名这几类：缺了它们，对应的分项会整条算不出来，而不是"少几只票"
+    _summary(syms, a.min_ok)
+
+
+def _done(sym):
+    p = os.path.join(OUT, f"{sym}.csv")
+    return os.path.exists(p) and os.path.getsize(p) > 100
+
+
+def _summary(syms, min_ok):
+    """两道闸门：关键标的逐个硬卡 + 个股总成功率。
+
+    关键标的必须单独卡，**不能只看总成功率**：531 只里 503 只是成分股，哪怕 ETF
+    一只都没抓到，总成功率仍有 503/531 = 95%，照样能过 90% 的闸门——而那样跑出来
+    杠杆温度、行业集中度、前瞻收益全是空的，oos_check 却会"正常"出一张表。
+    这正是 fetch_sp500_yahoo.py 那次"静默回退到 43 只篮子"的同一类错误，别重蹈。
+    """
     import engine as E
-    for name, need in (("杠杆ETF", E.LEV_ETFS), ("行业ETF", list(E.SECTOR_ETFS)),
-                       ("SPY/QQQ", ["SPY", "QQQ"])):
+    have = {s for s in syms if _done(s)}
+    crit = (("杠杆ETF", E.LEV_ETFS), ("行业ETF", list(E.SECTOR_ETFS)),
+            ("SPY/QQQ", ["SPY", "QQQ"]))
+    stocks = [s for s in E.STOCKS if s in have]
+    rate = len(stocks) / len(E.STOCKS)
+    print(f"  raw_long/ 现有 {len(have)}/{len(syms)} 只"
+          f"（其中成分股 {len(stocks)}/{len(E.STOCKS)} = {rate:.0%}）")
+    bad = []
+    for name, need in crit:
         miss = [s for s in need if s not in have]
         print(f"  {name:8s} {len(need)-len(miss)}/{len(need)}" + (f"  缺：{miss}" if miss else ""))
-    if rate < a.min_ok:
-        sys.exit(f"\n成功率 {rate:.0%} < {a.min_ok:.0%}，不要拿这份面板跑 oos_check。"
-                 f"\n用 --resume 重跑补齐（Yahoo 限流时隔几分钟再试）。")
+        if miss:
+            bad.append(f"{name} 缺 {len(miss)} 只")
+    if bad:
+        sys.exit(f"\n关键标的不全（{'；'.join(bad)}），不要拿这份面板跑 oos_check——"
+                 f"\n缺杠杆ETF 则杠杆温度算不出（红点温度占 2/9、蓝点温度占 1/6），"
+                 f"缺 QQQ 则前瞻收益无从算起。"
+                 f"\n等限流冷却后：python3 fetch_long_history.py --resume")
+    if rate < min_ok:
+        sys.exit(f"\n成分股成功率 {rate:.0%} < {min_ok:.0%}，不要拿这份面板跑 oos_check。"
+                 f"\n等限流冷却后：python3 fetch_long_history.py --resume")
     print(f"\n下一步：python3 fetch_vix_dgs10.py --years 22")
     print(f"        python3 oos_check.py --raw raw_long")
 
