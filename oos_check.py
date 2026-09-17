@@ -152,13 +152,23 @@ def coverage_by_year(lev_temp, dates):
     stocks = E.load_many(E.STOCKS)
     px = pd.DataFrame({t: d["close"] for t, d in stocks.items()}).reindex(dates)
     n = px.notna().sum(axis=1)
+    # 杠杆 ETF **当年真有几只在**——只报"杠杆温度有没有值"会骗人：
+    # 15 只里 10 只是 2008-11~2010-03 才上市的，2007-2008 只有 SSO/QLD/SDS 三只
+    # （做多 2 只、做空 1 只）。那种情况下多空比照样算得出数，notna 也是 100%，
+    # 但它和用 10+5 只算出来的**不是同一个指标**。分母必须显性化。
+    levs = E.load_many(E.LEV_ETFS)
+    lpx = pd.DataFrame({t: d["close"] for t, d in levs.items()}).reindex(dates)
+    nl = lpx.notna().sum(axis=1)
+    nlong = lpx[[c for c in lpx.columns if c in E.LEV_LONG]].notna().sum(axis=1)
     print("\n分年可用性（看清哪几年的读数根本不该信）")
-    print(f"  {'年':6s} {'有效个股数':>10s} {'杠杆温度有值':>12s}")
+    print(f"  {'年':6s} {'有效个股数':>10s} {'杠杆ETF只数':>12s} {'其中做多':>9s} {'杠杆温度有值':>12s}")
     for y in sorted({d.year for d in dates}):
         sel = [d for d in dates if d.year == y]
         lv = (f"{lev_temp.reindex(sel).notna().mean()*100:.0f}%"
               if lev_temp is not None else "0%")
-        print(f"  {y:<6d} {n.reindex(sel).mean():10.0f} {lv:>12s}")
+        mark = "  ← 降级" if nl.reindex(sel).mean() < len(E.LEV_ETFS) * 0.8 else ""
+        print(f"  {y:<6d} {n.reindex(sel).mean():10.0f} {nl.reindex(sel).mean():12.1f} "
+              f"{nlong.reindex(sel).mean():9.1f} {lv:>12s}{mark}")
 
 
 if __name__ == "__main__":
