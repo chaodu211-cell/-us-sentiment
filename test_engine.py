@@ -211,8 +211,11 @@ def t_alert_exclusive():
     rp = pd.Series(np.arange(800) % 3 == 0, index=idx)   # 状态序列由 repricing_regime 预先算好
     vix = pd.Series(35.0, index=idx)
     al = E.build_alerts(t, pd.DataFrame(index=idx), vix=vix, temp_fast=t, ndx=px, repricing=rp)
-    chk("红点与熊市反弹互斥", not (al["hot"] & al["hot_bear"]).any())
     chk("实心蓝点与空心蓝点互斥", not (al["cold"] & al["cold_soft"]).any())
+    # 熊市反弹（hot_bear）已于 2026-09 停用，见 engine.BEAR_TH 上方。这里守住"真的没了"：
+    # 只从 ALERTS 里删掉、build_alerts 仍在产出，会让它继续写进 data.json 并画到图上。
+    chk("熊市反弹已停用：build_alerts 不再产出", "hot_bear" not in al)
+    chk("熊市反弹已停用：ALERTS 里没有它", "hot_bear" not in [a["key"] for a in E.ALERTS])
 
 
 # ---- 新增：减仓温度（SELL_W 加权合成）----

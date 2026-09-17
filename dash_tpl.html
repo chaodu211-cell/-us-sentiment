@@ -262,7 +262,7 @@ table.ext .r{white-space:nowrap;font-size:12.5px}
           <li>每个指标计算滚动 <code>252</code> 日分位数，把绝对值转成相对历史水平的百分位。</li>
           <li>ERP 分位取反向 <code>100 − pct</code>，使其与其他指标方向一致（高值＝情绪热）。</li>
           <li><strong style="color:var(--ink)">活跃度指标按市场方向定向</strong>：换手率与杠杆资金对恐慌和狂热同样敏感，方向不可知。对<em style="font-style:normal;color:var(--ink)">高于常态</em>的部分乘以方向系数 <code>d = tanh(r₂₀ / 1.5σ)</code>；低于常态的部分记为中性 50。</li>
-          <li>换手率、TOP2抱团、上涨个股占比、站上MA20、杠杆多空比、风险溢价六项分位<strong style="color:var(--ink)">等权平均</strong>，得到<strong style="color:var(--ink)">蓝点温度</strong>；蓝点看它的当日不平滑口径，熊市反弹看平滑口径。</li>
+          <li>换手率、TOP2抱团、上涨个股占比、站上MA20、杠杆多空比、风险溢价六项分位<strong style="color:var(--ink)">等权平均</strong>，得到<strong style="color:var(--ink)">蓝点温度</strong>；蓝点看它的当日不平滑口径。</li>
           <li>另按 <code>TOP2抱团×2 · 杠杆温度×2 · 上涨拥挤度×3 · 站上MA20×1 · 换手率×1</code> 加权合成<strong style="color:var(--ink)">红点温度</strong>（页面顶部显示的就是它，红点据此触发）。</li>
           <li>按 <span id="bandtxt"></span> 划分五个情绪区间。</li>
         </ol>
@@ -319,7 +319,7 @@ $("meta").innerHTML = [
 /* ---- hero ---- */
 /* 页面上只有两个温度：
      红点温度 = TOP2×2 + 杠杆温度×2 + 上涨拥挤度×3 + MA20×1 + 换手率×1（加权分位），红点据此触发；
-     蓝点温度 = 六项等权，蓝点看它的当日不平滑口径，熊市反弹看平滑口径。
+     蓝点温度 = 六项等权，蓝点看它的当日不平滑口径。
    主显示是红点温度；拿不到时（历史前段上涨拥挤度还没预热完）退回显示蓝点温度。 */
 const HEROV = D.temperature_sell != null ? D.temperature_sell : D.temperature;
 const HEROS = (D.series.temperature_sell && D.series.temperature_sell.some(v => v != null))
@@ -523,10 +523,12 @@ function drawNdx(){
   // 预警点位：先画框（面积大），再画点，避免遮挡
   const rule = k => AL.rules.find(r => r.key === k);
   const flag = k => (AL.flags[k] || []).slice(A);
+  // narrow（橙线）与 hot_bear（空心红点）已停用，引擎不再下发这两个 key；
+  // flag()/rule() 对缺失 key 返回 []/undefined，每处都有守卫，所以直接不取即可。
   const fc = flag("crowd"), fh = flag("hot"), fl = flag("cold"), fn = flag("narrow"),
-        fhb = flag("hot_bear"), fls = flag("cold_soft");
+        fls = flag("cold_soft");
   const rc = rule("crowd"), rh = rule("hot"), rlo = rule("cold"), rn = rule("narrow"),
-        rhb = rule("hot_bear"), rls = rule("cold_soft");
+        rls = rule("cold_soft");
   const s = N2 > 1200 ? 7 : 9;
   // 上涨拥挤度：不打点，直接把这段指数走势线本身染成橙色——它是持续多日的形态，
   // 用线段比用标记更贴切。
@@ -558,11 +560,12 @@ function drawNdx(){
       fill:"none", stroke:"#05080C", "stroke-width":1.8, opacity:1}));
   } });
   const r = N2 > 1200 ? 2.2 : 3;
-  // 空心 = 需要打折的信号（熊市反弹的过热 / 宏观逆风里的恐慌），先画，实心盖在上面
+  // 空心 = 需要打折的信号（当前只剩宏观逆风里的恐慌＝空心蓝点；空心红点已停用），
+  // 先画，实心盖在上面
   const hollow = (f, ru) => { if (!ru) return; f.forEach((on,i) => { if (on && sp[i] != null)
     svg.appendChild(el("circle", {cx:x(i), cy:y(sp[i]), r:r+.6, fill:"#0A0E14",
       stroke:ru.color, "stroke-width":1.7, opacity:.95})); }); };
-  hollow(fhb, rhb); hollow(fls, rls);
+  hollow(fls, rls);
   if (rh) fh.forEach((on,i) => { if (on && sp[i] != null)
     svg.appendChild(el("circle", {cx:x(i), cy:y(sp[i]), r:r, fill:rh.color, opacity:.95})); });
   if (rlo) fl.forEach((on,i) => { if (on && sp[i] != null)
@@ -583,7 +586,7 @@ function drawNdx(){
     hov.setAttribute("cx", x(i)); hov.setAttribute("cy", y(sp[i])); hov.setAttribute("opacity", 1);
     if (rrLink) rrLink.show(i);          // 虚线延伸到下方的实际利率图并显示两条分位
     const rg = regOf(Sl[i]);
-    const hit = [fh[i] && rh, fhb[i] && rhb, fl[i] && rlo, fls[i] && rls,
+    const hit = [fh[i] && rh, fl[i] && rlo, fls[i] && rls,
                  fc[i] && rc, fn[i] && rn].filter(Boolean);
     const vx = D.series.vix ? D.series.vix[A + i] : null;
     tip.innerHTML = `<span style="color:#8DA2B8">${D2[i]}</span><br>` +
@@ -718,7 +721,7 @@ function segments(f){
   if (st >= 0) out.push([st, f.length-1]);
   return out;
 }
-/* 当前宏观状态：决定蓝点是实心还是空心，以及熊市反弹预警是否启用 */
+/* 当前宏观状态：决定蓝点是实心还是空心；趋势一项仅作事实陈述 */
 (() => {
   const M = D.macro, BR = D.bear, bits = [];
   if (M) bits.push(`10年期实际利率 <b>${M.real_rate == null ? "—" : M.real_rate.toFixed(2) + "%"}</b>`
@@ -727,12 +730,12 @@ function segments(f){
         + (M.lvl_pct == null ? "" : `；水位分位 ${M.lvl_pct.toFixed(0)}`) + "）")
     + ` · ${M.repricing ? "<b style=\"color:#D19A3E\">处于实际利率重估期，蓝点降级为空心</b>"
                         : "不处于实际利率重估期，蓝点按实心计"}`);
-  // 红点看红点温度；熊市反弹是另一条规则，看蓝点温度、门槛 BR.th。两者别混着说。
+  // 趋势只作事实陈述：熊市反弹预警已于 2026-09 停用（样本前检验里符号翻转，
+  // 见 engine.py BEAR_TH 上方），这里不再说"某某预警已启用"。
   const redTxt = D.sell_threshold == null ? `蓝点温度 > ${B[3]}` : `红点温度 > ${D.sell_threshold.toFixed(0)}`;
-  if (BR) bits.push(BR.now
-    ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下，熊市反弹预警已启用：蓝点温度 > ${BR.th} 即预警</b>`
-      + `（红点仍看${redTxt}）`
-    : `纳指未跌破下行的 ${BR.ma} 日均线，熊市反弹预警不启用 · 红点看${redTxt}`);
+  if (BR) bits.push((BR.now
+    ? `<b style="color:#CE5A4E">纳指位于下行的 ${BR.ma} 日均线之下（确认的下行趋势）</b>`
+    : `纳指未跌破下行的 ${BR.ma} 日均线`) + ` · 红点看${redTxt}`);
   $("macrobar").innerHTML = bits.length ? "当前宏观状态：" + bits.join("　|　") : "";
 })();
 
@@ -873,7 +876,8 @@ $("foot").innerHTML = `数据源：stockanalysis.com（${D.coverage.stocks} 只�
 
 const LIMITS = [
   ["跨年度的温度不可直接比较", "滚动 252 日分位只跟<b>过去一年</b>比。2023 年的 80 分和 2021 年的 80 分不是一回事。试过扩张窗口与更长的滚动窗口：描述变准了，但对未来三个月的判别力同时消失（触发后纳指 +5.56%，基准 +5.22%），所以保留 252 日口径。看的时候要带着这个前提。"],
-  ["对阴跌型熊市迟钝", "这套方法衡量的是「相对最近一年有多绷」。急跌型崩盘（2018Q4、2020、2025）读数到位；阴跌久了，坏就变成新常态——2022-10 熊市底蓝点温度仍读 <b>31.6</b>，没进恐慌区。那类下跌由贴现率驱动，情绪见底不等于价格见底，改由空心蓝点与熊市反弹预警在信号层兜。"],
+  ["对阴跌型熊市迟钝", "这套方法衡量的是「相对最近一年有多绷」。急跌型崩盘（2018Q4、2020、2025）读数到位；阴跌久了，坏就变成新常态——2022-10 熊市底蓝点温度仍读 <b>31.6</b>，没进恐慌区。那类下跌由贴现率驱动，情绪见底不等于价格见底。空心蓝点能兜住一部分；<b>下跌市里没有减仓信号</b>——原先补这个缺口的熊市反弹预警已停用，见下条。"],
+  ["熊市反弹预警（空心红点）已于 2026-09 停用", "它样本内很漂亮（触发后 63 日日均 <b>−10.04%</b>／81% 为负，基准 +5.17%），但把参数冻结后跑在标定窗口之前的 2007-2017，整个翻了过来：2006-2010 触发 42 天／9 段，日级 <b>+9.50%</b>、<b>只有 10% 为负</b>。触发区间是 2008-07-23 ~ 2009-05-15，而 2009-03-09 是那轮大底——它叫对了开头，然后在底部和底部之后一直在叫减仓。全样本只有两轮熊市，它一轮对一轮错，而对的那轮正是它被造出来要覆盖的那轮（门槛 60 就是为了让 2022 触发才定的）。零样本外支持，且判错的代价是在大底减仓，故停用而非降级。"],
   ["2022 年的蓝点会连着叫，而且都在半山腰", "按事件聚类：<b>非 2022 的 4 次，触发后 3 个月平均 +24.6%、4 战全胜</b>；<b>2022 的 5 次，平均 −2.2%、胜率 40%</b>。处理办法是空心蓝点——处于<b>实际利率重估期</b>时把蓝点降级为分批：6 个月变动排进自身过去 3 年的前 15%（涨得快）、水位仍在自身过去 5 年的 50 分位以下（还没走完）、且名义10年期美债同向上行（是紧缩不是通缩）。实测把 2022 那批精确劈开：13 个空心日后续 −8.7%／<b>全部为负</b>，29 个实心日 +27.5%／<b>全部为正</b>。两条判据缺一不可：只看速度分不开 2018Q4 与 2022Q1（两段 6 个月上行只差 5bp，前者是极好的蓝点），只看水位会把 2020-03 疫情底整段判反。三个门槛都比<b>自己的历史</b>而非固定数字，是为了跨利率环境——旧口径的「实际利率 &lt; 0.5%」是零利率年代的刻度，早就不可能再成立。<b>但这条规则判别的宏观状态在样本里只出现过一次</b>（2021下半年–2022），等于零样本外验证，所以它只降级、不屏蔽。"],
   ["减仓侧的边际在样本后半段衰减", "红点触发后 3 个月：2017–2021 <b>−5.33%</b>（该段基准 +5.70%），2022–2026 <b>+0.38%</b>（基准 +4.68%）。优势从 11.0 个百分点缩到 4.3 个。方向仍一致，但<b>别按全样本数字设仓位</b>。加仓侧（蓝点）两段都稳（+24.5%／+21.6%），比减仓侧可靠得多。"],
   ["杠杆温度只在最热的一档有用", "十分位表：最高十分位后续 3 个月 <b>−0.4%／46% 为负</b>（基准 +5.2%／26%），其余九档都在 +4.9% ~ +7.6% 之间，没有单调性。<b>当极端读数报警器用，别当连续打分用。</b>"],
