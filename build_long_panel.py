@@ -45,26 +45,51 @@ def read3or4(path):
     return df.dropna(subset=["close"])
 
 
-def splice(sa, st, tail=120):
+def splice(sa, st, tail=10):
     """sa=stockanalysis（权威），st=stooq（补历史）。返回拼好的 4 列表 + 诊断。
 
-    tail: 用重叠区间**最后** tail 天量比例——越靠近接缝越能反映当下的复权刻度
-    （早年的比例可能被两边不同的历史复权处理污染）。
+    tail: 在**接缝那一端**取 tail 天量比例。
+
+    —— 这里踩过一次，别改回去 ——
+    第一版写的是 ov[-tail:]，即重叠区间的**最后** tail 天。但接缝是 sa.index.min()，
+    在重叠区间的**开头**；重叠有十年，末尾离接缝十年远。
+    stockanalysis 做分红复权、stooq 不做（或口径不同），两条序列的比例会随分红
+    逐年累积漂移——MO 那种 7% 股息率的票十年能差近一倍。拿 2026 年量出来的比例去
+    缩放 2016 年之前的段，接缝处就炸开：实测 531 只里 109 只跳变 >6σ，
+    最差 HPE -46.8%、MO -25.8%、MMM -26.6%，全是高股息股。
+    所以必须在接缝那一端取。而且窗口不能宽：比例在窗口内本身就在漂，取中位数等于
+    把锚点放到窗口中点，离接缝还差半个窗口——实测 120 天窗口仍有 2.9σ 的残余跳变。
+    所以锚点取**接缝当天**，只用开头 tail 天的中位数做异常保护：接缝当天的比例
+    若偏离该中位数超过 5%，说明那天有坏价格，才退回用中位数。
     """
     ov = sa.index.intersection(st.index)
     d = {"overlap": len(ov)}
     if len(ov) < 60:
         return None, {**d, "err": "重叠不足 60 天"}
-    last = ov[-tail:] if len(ov) > tail else ov
+    last = ov[:tail] if len(ov) > tail else ov   # 接缝在重叠区间的**开头**
 
     r_px = (st.loc[last, "close"] / sa.loc[last, "close"]).replace([np.inf, -np.inf], np.nan).dropna()
     dv_sa = sa["rawclose"] * sa["volume"]
     dv_st = st["close"] * st["volume"]
     r_dv = (dv_st.loc[last] / dv_sa.loc[last]).replace([np.inf, -np.inf], np.nan).dropna()
-    if len(r_px) < 30 or len(r_dv) < 30:
-        return None, {**d, "err": "重叠区间有效样本不足"}
+    # 这个守卫查的是"锚点窗口里有没有可用样本"，不是重叠长度（重叠已在上面查过 60 天）。
+    # 锚点窗口只有 tail 天，别再拿 30 去卡它——那会把所有票判成失败。
+    if len(r_px) < 3 or len(r_dv) < 3:
+        return None, {**d, "err": "接缝附近有效样本不足"}
 
-    k_px, k_dv = float(r_px.median()), float(r_dv.median())
+    def _anchor(ratio):
+        """锚点取接缝当天；那天异常就退回窗口中位数。"""
+        med = float(ratio.median())
+        if len(ratio) == 0 or not np.isfinite(med) or med == 0:
+            return np.nan
+        first = float(ratio.iloc[0])
+        if not np.isfinite(first) or abs(first / med - 1.0) > 0.05:
+            return med
+        return first
+
+    k_px, k_dv = _anchor(r_px), _anchor(r_dv)
+    if not (np.isfinite(k_px) and np.isfinite(k_dv) and k_px and k_dv):
+        return None, {**d, "err": "接缝比例算不出来"}
     # 漂移度：整个重叠区间的比例相对中位数的离散程度。稳 = 两源复权约定一致。
     r_px_all = (st["close"].reindex(ov) / sa["close"].reindex(ov)).replace([np.inf, -np.inf], np.nan).dropna()
     r_dv_all = (dv_st.reindex(ov) / dv_sa.reindex(ov)).replace([np.inf, -np.inf], np.nan).dropna()
@@ -88,14 +113,21 @@ def splice(sa, st, tail=120):
     out = pd.DataFrame({"close": pre_close, "rawclose": pre_raw, "volume": pre_vol}).dropna()
     out = out[out.index < seam]
 
-    # 接缝处的涨跌幅是否异常：拿它和该票自身的日波动比
+    # 接缝质量怎么判：**不能**看"接缝当天涨跌幅大不大"——那天本来就有真实的市场涨跌，
+    # 拿它跟日波动比会把正常行情误判成假跳变（上一版就是这么写的，合成数据上
+    # 0%/3%/7%/10% 股息全都报同一个 -1.97%/1.6σ，那其实是真实收益）。
+    # 正确判据：拼出来的接缝收益，理论上恒等于 stooq 自己那天的收益——
+    #   拼接收益 = sa[seam] / (st[seam-1]/k_px) - 1，而 k_px = st[seam]/sa[seam]
+    #            = st[seam]/st[seam-1] - 1 = stooq 自己的收益
+    # 所以两者之差就是缩放误差，锚点落在接缝当天时应当 ~0；只有退回中位数
+    # （接缝当天有坏价格）时才会非零。
     joined = pd.concat([out["close"], sa["close"]]).sort_index()
     ret = joined.pct_change()
     pos = joined.index.get_indexer([seam])[0]
-    if pos > 0:
-        sd = ret.std()
+    st_ret = st["close"].pct_change()
+    if pos > 0 and seam in st_ret.index and np.isfinite(st_ret.loc[seam]):
         d["seam_ret"] = float(ret.iloc[pos])
-        d["seam_z"] = float(abs(ret.iloc[pos]) / sd) if sd and np.isfinite(sd) else np.nan
+        d["seam_err"] = float(ret.iloc[pos] - st_ret.loc[seam])
     d["pre_rows"] = int(len(out))
     return out, d
 
@@ -105,8 +137,8 @@ def main():
     ap.add_argument("--sa", default="raw", help="stockanalysis 目录（权威，2016-09 起）")
     ap.add_argument("--stooq", default="raw_long_stooq", help="stooq 目录（补 2016 之前）")
     ap.add_argument("--out", default="raw_long")
-    ap.add_argument("--seam-z", type=float, default=6.0,
-                    help="接缝涨跌幅超过自身 z 倍标准差就告警（默认 6）")
+    ap.add_argument("--seam-err", type=float, default=0.005,
+                    help="接缝缩放误差超过此值就告警（默认 0.5%%）")
     a = ap.parse_args()
 
     SA = os.path.join(BASE, a.sa); ST = os.path.join(BASE, a.stooq); OUT = os.path.join(BASE, a.out)
@@ -153,11 +185,13 @@ def main():
         bad_dv = r[r["dv_drift"] > 0.5].sort_values("dv_drift", ascending=False)
         print(f"\n  成交额比例漂移 > 0.5 的：{len(bad_dv)} 只"
               + (f"，最差几只 {list(bad_dv['sym'].head(8))}" if len(bad_dv) else "（没有）"))
-        if "seam_z" in r:
-            bad = r[r["seam_z"] > a.seam_z].sort_values("seam_z", ascending=False)
-            print(f"\n—— 接缝处是否造出假跳变 ——")
-            print(f"  接缝涨跌幅 > {a.seam_z}σ 的：{len(bad)} 只"
-                  + (f"，最差几只 {[(x.sym, round(x.seam_ret*100,1)) for x in bad.head(8).itertuples()]}"
+        if "seam_err" in r:
+            e = r["seam_err"].abs()
+            bad = r.assign(_e=e)[e > a.seam_err].sort_values("_e", ascending=False)
+            print(f"\n—— 接缝缩放误差（拼接收益 vs stooq 自身收益，应 ~0）——")
+            print(f"  中位 {e.median():.2e}   90分位 {e.quantile(.9):.2e}   最大 {e.max():.2e}")
+            print(f"  误差 > {a.seam_err:.1%} 的：{len(bad)} 只"
+                  + (f"，最差几只 {[(x.sym, f'{x._e*100:.1f}%') for x in bad.head(8).itertuples()]}"
                      if len(bad) else "（没有，拼接干净）"))
     if only_st:
         print(f"\n  仅 stooq、无从校准的 {len(only_st)} 只：{only_st[:10]}")
