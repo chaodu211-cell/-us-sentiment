@@ -5,6 +5,10 @@ name: daily
 #
 # raw/ 十年原始数据（约43MB / 540个CSV）不进 git —— 每天刷新都会重写这些文件，
 # 提交进去会让仓库历史无限膨胀且无法回收。改用 actions/cache 缓存。
+#
+# 准时由外部负责：2026-10 起 GitHub 的定时触发常晚 6 小时以上（晚到时正赶上美股盘中），
+# 所以每个工作日北京 19:18 由 Claude 定时任务手动运行（workflow_dispatch）本工作流。
+# 下面的 cron 只作兜底：晚到时若线上 status.json 显示今天的数据已发布，就整趟跳过。
 on:
   # 12:00 UTC = 美东早8点（夏令时）/ 早7点（冬令时），前一交易日收盘数据此时已可取
   schedule:
@@ -30,7 +34,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 定时运行先看线上 status.json：今天 11:00 UTC（北京 19:00）之后已有一次抓取成功的发布，就跳过。
+  # 只拦定时运行；代码推送、手动运行照常跑。读不到 status.json 时不跳过（宁可多跑一次）。
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          curl -fsS --retry 3 "https://chaodu211-cell.github.io/-us-sentiment/status.json?t=$(date +%s)" -o status.json || exit 0
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          st = json.load(open("status.json", encoding="utf-8"))
+          now = datetime.now(timezone.utc)
+          cutoff = now.replace(hour=11, minute=0, second=0, microsecond=0)   # 当天 11:00 UTC = 北京 19:00
+          gen = datetime.fromisoformat(st["generated_at"].replace("Z", "+00:00"))
+          skip = bool(st.get("fetch_ok")) and gen >= cutoff
+          print(f"线上 status.json：截至 {st['as_of']}，生成于 {st['generated_at']}，抓取成功 {st.get('fetch_ok')} → "
+                + ("今天的数据已有，跳过" if skip else "还没有今天的数据，照跑"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+
   refresh:
+    needs: check
+    if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,9 +153,23 @@ jobs:
           done
 
       - name: 准备 Pages 目录
+        env:
+          FETCH_OK: ${{ steps.pipeline.outcome == 'success' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p _site
           cp dashboard.html _site/index.html
+          # status.json 给上面的 check 判断「今天的数据是否已发布」用
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("data.json", encoding="utf-8"))
+          st = {"as_of": d["as_of"], "generated_at": d.get("generated_at"),
+                "fetch_ok": os.environ["FETCH_OK"] == "true",
+                "run_url": os.environ["RUN_URL"], "event": os.environ.get("GITHUB_EVENT_NAME"),
+                "sha": os.environ.get("GITHUB_SHA")}
+          json.dump(st, open("_site/status.json", "w", encoding="utf-8"), ensure_ascii=False)
+          print(st)
+          PY
 
       - uses: actions/upload-pages-artifact@v3
         with:
