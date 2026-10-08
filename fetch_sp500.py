@@ -216,7 +216,7 @@ def extend_local(rows, local):
     if not older:
         return rows, 0
     adj = {r[0]: float(r[1]) for r in rows}
-    ks = [adj[r[0]] / float(r[1]) for r in sorted(local) if r[0] in adj and float(r[1]) > 0][:60]
+    ks = [adj[r[0]] / float(r[1]) for r in sorted(local) if adj.get(r[0], 0) > 0 and float(r[1]) > 0][:60]
     if len(ks) < EXT_MIN_OVERLAP or max(ks) / min(ks) - 1 > EXT_MAX_SPREAD:
         return rows, 0
     k = sorted(ks)[len(ks) // 2]
@@ -304,6 +304,7 @@ def main():
     print(f"   只用 {CUTOFF} 之前的日线（美东当天 {CLOSE_HOUR_ET}:00 之前不收当天那根，防盘中半成品）")
     ok, fail, t0 = [], [], time.time()
     fulls = ext = 0
+    starts = {}             # 每只写盘后的最早日期，用来查有没有被截短的
     with ThreadPoolExecutor(max_workers=a.workers) as ex:
         if inc:
             futs = {ex.submit(fetch_one_incremental, s, e): s for s, e in targets}
@@ -321,6 +322,7 @@ def main():
             if rows:
                 rows, n_ext = extend_local(rows, _read_local(sym))   # raw/ 只增不减，见 extend_local
                 ext += n_ext > 0
+                starts[sym] = rows[-1][0]
                 with open(os.path.join(RAW, f"{sym}.csv"), "w") as fh:
                     fh.write("\n".join(",".join(r) for r in rows) + "\n")
                 ok.append((sym, len(rows)))
@@ -356,6 +358,12 @@ def main():
     print("  行业分布: " + "  ".join(f"{k}{v}" for k, v in sorted(by.items(), key=lambda x: -x[1])))
     if fail:
         print(f"  失败: {[s for s, _ in fail][:12]}{' …' if len(fail) > 12 else ''}")
+    # 起点明显晚于 SPY 的标的：新上市、改了代码，或 raw/ 被截短过（数据源 "10Y" 只给约 5 年，见 extend_local）
+    if "SPY" in starts:
+        lim = (datetime.strptime(starts["SPY"], "%Y-%m-%d") + timedelta(days=30)).strftime("%Y-%m-%d")
+        late = sorted((d, s) for s, d in starts.items() if d > lim)
+        print(f"  起点晚于 SPY（{starts['SPY']}）30 天以上：{len(late)} 只"
+              + (f"  {' '.join(f'{s}:{d}' for d, s in late[:15])}{' …' if len(late) > 15 else ''}" if late else ""))
     print("\n下一步：python3 engine.py")
 
 
