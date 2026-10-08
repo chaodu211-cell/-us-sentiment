@@ -22,6 +22,10 @@ on:
         description: "全量重下十年历史（平时不需要；怀疑数据有问题时才勾）"
         type: boolean
         default: false
+      restore_cache:
+        description: "从指定的 raw/ 缓存恢复（填缓存 key，如 raw-37308293205；平时留空＝取最近一份）"
+        type: string
+        default: ""
 
 permissions:
   contents: write   # 把 data.json / dashboard.html 提交回仓库
@@ -80,13 +84,14 @@ jobs:
       # 缓存 key 必须每次轮换：actions/cache 的 key 是不可变的，用固定 key 会导致
       # 缓存永远停在第一天、增量再也存不回去。用 run_id 做后缀每次存新的，
       # restore-keys 前缀回退到最近一次。旧缓存由 GitHub 按 LRU 自动清理。
+      # 手动运行填了 restore_cache 时只取那一份（取不到就报错，不悄悄退回最近一份）。
       - name: 取回 raw/ 缓存
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: raw
-          key: raw-${{ github.run_id }}
-          restore-keys: |
-            raw-
+          key: ${{ inputs.restore_cache || format('raw-{0}', github.run_id) }}
+          restore-keys: ${{ !inputs.restore_cache && 'raw-' || '' }}
+          fail-on-cache-miss: ${{ inputs.restore_cache && 'true' || 'false' }}
 
       - name: 刷新数据并渲染
         id: pipeline
@@ -95,6 +100,14 @@ jobs:
           set -o pipefail
           if [ "${{ inputs.full }}" = "true" ]; then MODE=""; else MODE="--fast"; fi
           python3 daily_refresh.py $MODE 2>&1 | tee run.log
+
+      # 抓完立刻存缓存，不等作业结束——后面「提交结果」失败会让作业标红，actions/cache 的收尾保存就不会执行了
+      - name: 保存 raw/ 缓存
+        if: ${{ !cancelled() && hashFiles('raw/*.csv') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: raw
+          key: raw-${{ github.run_id }}
 
       # 抓取失败时的兜底：用缓存里已有的 raw/ 重算并重新渲染，
       # 至少让页面反映最新代码，而不是整页变陈。engine.py 自带数据完整性闸门
@@ -179,7 +192,8 @@ jobs:
           # git 会以「有未提交改动」拒绝 rebase——2026-09-21 起每次都这样失败，又因为循环结束后退出码为 0，
           # 一直没报红，data.json 与 _pipeline_state.json 停在 09-18。三次都失败就让这一步报红。
           for i in 1 2 3; do
-            if git pull --rebase --autostash --quiet origin main && git push origin HEAD:main; then
+            # -X theirs：两次运行基于同一版各自提交了产物时，rebase 冲突一律以本次（更晚算出的）为准
+            if git pull --rebase -X theirs --autostash --quiet origin main && git push origin HEAD:main; then
               echo "已提交：daily $(date -u +%F) · $ALERTS"
               exit 0
             fi

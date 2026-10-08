@@ -156,6 +156,13 @@ INC_TOL = 5e-4          # 重叠区间复权价的相对容差；超过即判定
 INC_MIN_ROWS = 200      # 本地文件太短（新上市/上次没拉全）就别增量了，直接全量
 FULL_EVERY_DAYS = 30    # 距上次全量超过这么多天，自动强制全量一次，防止误差长期累积
 
+# raw/ 只增不减（2026-10-08 加，移植自最优拟合仓库 hist_store.extend 第①步）：
+# 数据源的 "10Y" 现在只给约 5 年（1255 个交易日）。全量重下后直接覆盖本地文件，起点就跟着往后挪——
+# 2026-10-07 那次运行有 494 只因前一天的盘中半成品行对不上而全量重下，raw/ 从 2016-09 起变成 2021-10 起，
+# 页面历史从 2017-10 起缩成 2022-11 起。现在写盘前把本地比新数据更早的行，按重叠区间的复权比例缩放后接回去。
+EXT_MIN_OVERLAP = 20    # 本地旧行与新数据至少重叠这么多天才接
+EXT_MAX_SPREAD = 0.01   # 重叠区间复权比例的离散度上限：超过说明不是同一只票（代码被别的公司沿用）或数据有问题
+
 
 def _read_local(sym):
     """读本地 raw/<SYM>.csv → [[date, adjclose, close, volume], ...] 新到旧；没有则 None"""
@@ -194,6 +201,26 @@ def merge_rows(local, fresh):
         return None, True                          # 完全没重叠：本地太旧，短区间接不上
     lo.update({r[0]: r for r in fresh})
     return sorted(lo.values(), reverse=True), False
+
+
+def extend_local(rows, local):
+    """rows：即将写进 raw/<sym>.csv 的行（新到旧），把 local 里比 rows 更早的部分接上。→ (rows, 接上的行数)
+
+    用最早 60 个重叠日的复权比例（取中位数）缩放旧行的复权价；原始收盘价与成交量不随复权变，原样接上。
+    重叠不足或比例不稳就不接（宁可历史短一截，也不拼出一根凭空的涨跌幅）。
+    """
+    if not rows or not local:
+        return rows, 0
+    first = rows[-1][0]
+    older = [r for r in local if r[0] < first]
+    if not older:
+        return rows, 0
+    adj = {r[0]: float(r[1]) for r in rows}
+    ks = [adj[r[0]] / float(r[1]) for r in sorted(local) if r[0] in adj and float(r[1]) > 0][:60]
+    if len(ks) < EXT_MIN_OVERLAP or max(ks) / min(ks) - 1 > EXT_MAX_SPREAD:
+        return rows, 0
+    k = sorted(ks)[len(ks) // 2]
+    return rows + [[r[0], f"{float(r[1]) * k:.7g}"] + r[2:] for r in older], len(older)
 
 
 def fetch_one_incremental(sym, is_etf):
@@ -276,7 +303,7 @@ def main():
     print(f"② 拉取 {len(targets)} 个标的 × {mode} 日线，并发 {a.workers}…")
     print(f"   只用 {CUTOFF} 之前的日线（美东当天 {CLOSE_HOUR_ET}:00 之前不收当天那根，防盘中半成品）")
     ok, fail, t0 = [], [], time.time()
-    fulls = 0
+    fulls = ext = 0
     with ThreadPoolExecutor(max_workers=a.workers) as ex:
         if inc:
             futs = {ex.submit(fetch_one_incremental, s, e): s for s, e in targets}
@@ -292,6 +319,8 @@ def main():
             if rows:
                 rows = [r for r in rows if r[0] < CUTOFF]      # 增量合并会带回本地旧的半成品行，写盘前再筛一次
             if rows:
+                rows, n_ext = extend_local(rows, _read_local(sym))   # raw/ 只增不减，见 extend_local
+                ext += n_ext > 0
                 with open(os.path.join(RAW, f"{sym}.csv"), "w") as fh:
                     fh.write("\n".join(",".join(r) for r in rows) + "\n")
                 ok.append((sym, len(rows)))
@@ -319,7 +348,8 @@ def main():
     lens = sorted(n for _, n in ok)
     tag = f"（增量，其中 {fulls} 只因复权重算或本地过短走了全量）" if inc else "（全量）"
     print(f"\n完成{tag}：{len(ok)} 成功 / {len(fail)} 失败，用时 {time.time()-t0:.0f}s")
-    print(f"  行数中位 {lens[len(lens)//2] if lens else 0}，最少 {lens[0] if lens else 0}")
+    print(f"  行数中位 {lens[len(lens)//2] if lens else 0}，最少 {lens[0] if lens else 0}"
+          f"，其中 {ext} 只接回了本地更早的历史")
     by = {}
     for v in sectors.values():
         by[v] = by.get(v, 0) + 1
