@@ -63,6 +63,8 @@ jobs:
     needs: check
     if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      built: ${{ steps.site.outputs.built }}
     steps:
       - uses: actions/checkout@v4
 
@@ -122,9 +124,35 @@ jobs:
           print(f"截至 {d['as_of']}  综合温度 {d['temperature']}  减仓温度 {d.get('temperature_sell')}")
           PY
 
+      - name: 准备 Pages 目录
+        id: site
+        env:
+          FETCH_OK: ${{ steps.pipeline.outcome == 'success' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p _site
+          cp dashboard.html _site/index.html
+          # status.json 给上面的 check 判断「今天的数据是否已发布」用
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("data.json", encoding="utf-8"))
+          st = {"as_of": d["as_of"], "generated_at": d.get("generated_at"),
+                "fetch_ok": os.environ["FETCH_OK"] == "true",
+                "run_url": os.environ["RUN_URL"], "event": os.environ.get("GITHUB_EVENT_NAME"),
+                "sha": os.environ.get("GITHUB_SHA")}
+          json.dump(st, open("_site/status.json", "w", encoding="utf-8"), ensure_ascii=False)
+          print(st)
+          PY
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
       # _pipeline_state.json 记录上次处理到哪个交易日，NEWLY_TRIGGERED 的判定靠它。
       # 它在仓库根目录（不在 raw/ 里，不受缓存覆盖），必须提交才能跨运行保持，
       # 否则每次运行都会被当成「新交易日」而重复报警。
+      # 放在页面打包之后：推送失败会让本次运行标红（GitHub 会发邮件），页面发布不受影响（deploy 不依赖这一步）。
       - name: 提交结果
         run: |
           git config user.name  "github-actions[bot]"
@@ -146,34 +174,20 @@ jobs:
           fi
           if [ -z "$ALERTS" ]; then ALERTS="NEWLY_TRIGGERED:unknown"; fi
           git commit -m "daily $(date -u +%F) · $ALERTS"
-          # 定时任务与 push 可能挨得很近，先 rebase 再推，避免非快进被拒
+          # 定时任务与 push 可能挨得很近，先 rebase 再推，避免非快进被拒。
+          # --autostash：流水线会改写受跟踪却不提交的文件（sectors.json 随成分股调整而变），不带它
+          # git 会以「有未提交改动」拒绝 rebase——2026-09-21 起每次都这样失败，又因为循环结束后退出码为 0，
+          # 一直没报红，data.json 与 _pipeline_state.json 停在 09-18。三次都失败就让这一步报红。
           for i in 1 2 3; do
-            git pull --rebase --quiet origin main && git push && break
+            if git pull --rebase --autostash --quiet origin main && git push origin HEAD:main; then
+              echo "已提交：daily $(date -u +%F) · $ALERTS"
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
             echo "推送失败，重试 $i"; sleep $((i * 3))
           done
-
-      - name: 准备 Pages 目录
-        env:
-          FETCH_OK: ${{ steps.pipeline.outcome == 'success' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          mkdir -p _site
-          cp dashboard.html _site/index.html
-          # status.json 给上面的 check 判断「今天的数据是否已发布」用
-          python3 - <<'PY'
-          import json, os
-          d = json.load(open("data.json", encoding="utf-8"))
-          st = {"as_of": d["as_of"], "generated_at": d.get("generated_at"),
-                "fetch_ok": os.environ["FETCH_OK"] == "true",
-                "run_url": os.environ["RUN_URL"], "event": os.environ.get("GITHUB_EVENT_NAME"),
-                "sha": os.environ.get("GITHUB_SHA")}
-          json.dump(st, open("_site/status.json", "w", encoding="utf-8"), ensure_ascii=False)
-          print(st)
-          PY
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
+          echo "::error::data.json / _pipeline_state.json 推送失败：页面照常发布，但下次运行的 NEWLY_TRIGGERED 会按旧状态判定"
+          exit 1
 
       - name: 运行摘要
         if: always()
@@ -192,6 +206,8 @@ jobs:
 
   deploy:
     needs: refresh
+    # 只要页面产物传上去了就发布，哪怕后面「提交结果」失败
+    if: ${{ !cancelled() && needs.refresh.outputs.built == 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
