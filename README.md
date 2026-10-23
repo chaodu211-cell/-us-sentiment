@@ -132,10 +132,10 @@ JS/CSS 依赖（只有一个 Google Fonts 链接，断网时自动退回系统�
 
 ### 方案 A：自己的电脑 / 服务器（最简单）
 
-macOS / Linux，`crontab -e` 加一行（每个工作日纽约时间下午五点、收盘后，按你所在时区换算）：
+macOS / Linux，`crontab -e` 加一行（每天美东早八点，按你所在时区换算）：
 
 ```
-0 17 * * 1-5 cd /path/to/us-sentiment && /usr/bin/python3 daily_refresh.py >> run.log 2>&1
+0 8 * * 1-5 cd /path/to/us-sentiment && /usr/bin/python3 daily_refresh.py >> run.log 2>&1
 ```
 
 Windows 用「任务计划程序」建一个每日任务，操作填 `python.exe`，参数填
@@ -152,7 +152,7 @@ Windows 用「任务计划程序」建一个每日任务，操作填 `python.exe
 3. 把 `dashboard.html` 作为 `index.html` 发布到 GitHub Pages
 4. 在 Actions 的运行摘要里贴出日志尾部（含 `NEWLY_TRIGGERED` 那一行）
 
-三种触发方式：**工作日纽约时间 17:00**（收盘后一小时；cron 在 21:00/22:00 UTC 各排一条，按夏令时只跑其中一条）、**每次 push 到 main**
+三种触发方式：**工作日 12:00 UTC**（美东早8点/冬令时早7点）、**每次 push 到 main**
 （改完引擎不用手动跑任何东西，页面自动重建）、以及手动触发（可勾选「全量重下十年历史」）。
 
 **首次启用需要点一下**：仓库 Settings → Pages → Source 选 **GitHub Actions**。
