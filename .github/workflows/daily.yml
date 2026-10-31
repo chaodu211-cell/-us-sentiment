@@ -71,6 +71,8 @@ jobs:
       built: ${{ steps.site.outputs.built }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       # 不开 cache: pip —— 本仓库刻意没有 requirements.txt / pyproject.toml，
       # 开了会直接报 "No file matched to [**/requirements.txt ...]" 并让作业失败。
@@ -160,6 +162,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
+          name: github-pages-${{ github.run_attempt }}
           path: _site
 
       # _pipeline_state.json 记录上次处理到哪个交易日，NEWLY_TRIGGERED 的判定靠它。
@@ -229,3 +232,5 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
